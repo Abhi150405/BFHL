@@ -5,10 +5,11 @@ langchain-community
 langchain-core
 langchain-experimental
 langchain-groq
-sentence-transformers
 faiss-cpu
 unstructured
 python-docx
 pypdf
 requests
 python-dotenv
+google-generativeai
+langchain-google-genai
