@@ -67,5 +67,5 @@ def download_hugging_face_embeddings():
     """
     Downloads embeddings from Hugging Face.
     """
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(model_name="thenlper/gte-small")
     return embeddings
