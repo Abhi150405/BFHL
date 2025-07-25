@@ -12,4 +12,3 @@ python-docx
 pypdf
 requests
 python-dotenv
-vercel-fastapi
