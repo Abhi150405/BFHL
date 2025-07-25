@@ -1,18 +1,15 @@
-# For Web API
 fastapi
 uvicorn
-
-# For Language Model & Orchestration
 langchain
+langchain-community
+langchain-core
+langchain-experimental
 langchain-groq
-langchain-openai
-python-dotenv
-
-# For Vector Search & Embeddings (RAG)
 sentence-transformers
 faiss-cpu
-pypdf # For loading PDF documents
-
-# If you are using Pinecone as your vector store
-pinecone-client
-langchain-pinecone
+unstructured
+python-docx
+pypdf
+requests
+python-dotenv
+vercel-fastapi
