@@ -24,7 +24,6 @@ filelock==3.18.0
 Flask==3.1.1
 frozenlist==1.7.0
 fsspec==2025.5.1
--e git+https://github.com/AbhishekC1005/Medical-Chatbot.git@38ee12d50d8eed457450d938026e5277a22bf4d8#egg=Generative_AI_Project
 googleapis-common-protos==1.70.0
 greenlet==3.2.3
 groq==0.29.0
