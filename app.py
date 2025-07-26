@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import uvicorn
 
-from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI 
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
@@ -52,7 +52,7 @@ class HackRxResponse(BaseModel):
 
 # --- Initialize RAG Components ---
 embeddings = download_hugging_face_embeddings()
-llm = ChatGroq(model="llama3-8b-8192", temperature=0.2)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro-latest", temperature=0.3)
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
     ("human", "{input}")
