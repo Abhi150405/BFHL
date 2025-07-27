@@ -1,4 +1,5 @@
 import os
+import asyncio
 from typing import List
 
 from fastapi import FastAPI, Depends, HTTPException, Security
@@ -62,7 +63,7 @@ prompt = ChatPromptTemplate.from_messages([
 @app.post("/hackrx/run", response_model=HackRxResponse)
 async def run_hackrx(
     request: HackRxRequest,
-    user: str = Depends(get_current_user)  # This line enforces authentication
+    user: str = Depends(get_current_user)  # Enforces authentication
 ):
     """
     Processes a document from a URL using a temporary FAISS index.
@@ -80,7 +81,7 @@ async def run_hackrx(
         if not text_chunks:
             raise HTTPException(status_code=500, detail="Failed to split the document.")
 
-        # 3. Create FAISS vector store in memory
+        # 3. Create FAISS vector store in memory for every request
         vector_store = FAISS.from_documents(
             documents=text_chunks,
             embedding=embeddings
@@ -91,11 +92,16 @@ async def run_hackrx(
         document_chain = create_stuff_documents_chain(llm, prompt)
         rag_chain = create_retrieval_chain(retriever, document_chain)
 
-        # 5. Generate answers for all questions
-        answers = [
-            rag_chain.invoke({"input": q}).get("answer", "Could not find an answer.")
-            for q in request.questions
-        ]
+        # ✅ 5. Generate answers for all questions CONCURRENTLY
+        async def get_answer(question: str):
+            """Helper function to invoke the RAG chain asynchronously."""
+            result = await rag_chain.ainvoke({"input": question})
+            return result.get("answer", "Could not find an answer.")
+
+        # Create a list of tasks and run them all in parallel
+        tasks = [get_answer(q) for q in request.questions]
+        answers = await asyncio.gather(*tasks)
+        
         return HackRxResponse(answers=answers)
 
     except Exception as e:
