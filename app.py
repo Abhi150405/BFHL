@@ -53,7 +53,7 @@ class HackRxResponse(BaseModel):
 
 # --- Initialize RAG Components ---
 embeddings = download_hugging_face_embeddings()
-llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
+llm = ChatGroq(model="gemma2-9b-it", temperature=0.2)
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
     ("human", "{input}")
