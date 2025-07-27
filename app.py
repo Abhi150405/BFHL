@@ -88,7 +88,7 @@ async def run_hackrx(
         )
 
         # 4. Create retriever and RAG chain
-        retriever = vector_store.as_retriever(search_kwargs={"k": 2})
+        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
         document_chain = create_stuff_documents_chain(llm, prompt)
         rag_chain = create_retrieval_chain(retriever, document_chain)
 
