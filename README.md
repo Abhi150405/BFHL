@@ -1,4 +1,4 @@
-# Medical-Chatbot
+# BFHL
 
 This project is a document-based Q&A chatbot API that supports PDF, Word (.docx), and Email (.eml/.msg) files. It uses FastAPI, LangChain, and FAISS for in-memory vector search.
 
