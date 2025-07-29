@@ -13,3 +13,5 @@ requests
 python-dotenv
 google-generativeai
 langchain-google-genai
+pydantic
+typing-extensions
