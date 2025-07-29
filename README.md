@@ -13,7 +13,7 @@ This project is a document-based Q&A chatbot API that supports PDF, Word (.docx)
 1. **Clone the repository:**
    ```sh
    git clone https://github.com/AbhishekC1005/BFHL.git
-   
+   cd BFHL
    ```
 
 2. **Create and activate a virtual environment (optional but recommended):**
