@@ -22,9 +22,9 @@ from src.prompt import system_prompt
 load_dotenv()
 
 app = FastAPI(
-    title="Document Q&A API",
-    description="An API that uses FAISS to answer questions about a document.",
-    version="2.0.0"
+    title="Parallel Document Q&A API",
+    description="An API that uses FAISS and parallel embedding to answer questions about a document.",
+    version="2.1.0"
 )
 
 # --- Authentication ---
@@ -66,10 +66,10 @@ async def run_hackrx(
     user: str = Depends(get_current_user)  # Enforces authentication
 ):
     """
-    Processes a document from a URL using a temporary FAISS index.
-    Requires Bearer Token authentication.
+    Processes a document from a URL using a temporary FAISS index
+    with embeddings created in parallel.
     """
-    print(f"Processing authenticated request with FAISS index")
+    print(f"Processing authenticated request with parallel embedding")
     try:
         # 1. Load document from URL
         docs = load_doc_from_url(request.documents)
@@ -81,27 +81,37 @@ async def run_hackrx(
         if not text_chunks:
             raise HTTPException(status_code=500, detail="Failed to split the document.")
 
-        # 3. Create FAISS vector store in memory for every request
-        vector_store = FAISS.from_documents(
-            documents=text_chunks,
+        # 3. Create Embeddings in PARALLEL
+        # The `aembed_documents` method handles concurrent API calls efficiently.
+        print(f"Starting parallel embedding for {len(text_chunks)} chunks...")
+        chunk_texts = [chunk.page_content for chunk in text_chunks]
+        chunk_embeddings = await embeddings.aembed_documents(chunk_texts)
+        print("...Parallel embedding complete.")
+
+        # Combine the texts and their corresponding embeddings
+        text_embedding_pairs = list(zip(chunk_texts, chunk_embeddings))
+
+        # 4. Create FAISS vector store from the pre-computed embeddings
+        # This is much faster as no API calls are made here.
+        vector_store = FAISS.from_embeddings(
+            text_embeddings=text_embedding_pairs,
             embedding=embeddings
         )
 
-        # 4. Create retriever and RAG chain
+        # 5. Create retriever and RAG chain
         retriever = vector_store.as_retriever(search_kwargs={"k": 4})
         document_chain = create_stuff_documents_chain(llm, prompt)
         rag_chain = create_retrieval_chain(retriever, document_chain)
 
-        # ✅ 5. Generate answers for all questions CONCURRENTLY
+        # 6. Generate answers for all questions CONCURRENTLY
         async def get_answer(question: str):
             """Helper function to invoke the RAG chain asynchronously."""
             result = await rag_chain.ainvoke({"input": question})
             return result.get("answer", "Could not find an answer.")
 
-        # Create a list of tasks and run them all in parallel
         tasks = [get_answer(q) for q in request.questions]
         answers = await asyncio.gather(*tasks)
-        
+
         return HackRxResponse(answers=answers)
 
     except Exception as e:
