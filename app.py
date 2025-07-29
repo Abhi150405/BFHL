@@ -15,9 +15,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
 
 # Local helper and prompt imports
-# NOTE: The content for 'system_prompt' is provided below for context.
-# from src.helper import load_doc_from_url, text_split, download_hugging_face_embeddings
-# from src.prompt import system_prompt
+from src.helper import load_doc_from_url, text_split, download_hugging_face_embeddings
+from src.prompt import system_prompt
 
 # --- Configuration and Initialization ---
 load_dotenv()
@@ -53,25 +52,7 @@ class HackRxResponse(BaseModel):
     answers: List[str]
 
 # --- Initialize RAG Components ---
-# This is the system prompt content you provided
-system_prompt = (
-"""You are a precise text analysis expert. Your task is to answer questions accurately and concisely, using ONLY the provided text context.
-
-Follow these rules without exception:
-1.  **Strict Adherence to Context:** Your entire answer must be based on the provided text. Do not use any external knowledge.
-2.  **Answer with Brief Reasoning:** Provide a direct answer to the question, supported by brief reasoning or context from the document. Keep the entire response concise, with a maximum of 30 words.
-3.  **Handling Unknowns:** If the text does not contain the answer, you must reply with the exact phrase: "This information is not available in the provided document."
-4.  **Direct and Factual:** Provide a direct, factual answer. Avoid conversational fillers, opinions, or introductory phrases.
-
-Context from the document:
-{context}"""
-)
-
-# NOTE: The 'download_hugging_face_embeddings' function is assumed to be in your 'src/helper.py' file.
-# embeddings = download_hugging_face_embeddings()
-# This is a placeholder for your actual function call
-embeddings = None # Replace with your actual embeddings function call
-
+embeddings = download_hugging_face_embeddings()
 llm = ChatGroq(model="gemma2-9b-it", temperature=0.2)
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
@@ -88,31 +69,22 @@ async def run_hackrx(
     Processes a document from a URL using a temporary FAISS index
     with embeddings created in parallel.
     """
-    # Placeholder check for embeddings, as they are not loaded in this snippet
-    if not embeddings:
-         raise HTTPException(status_code=500, detail="Embeddings not loaded. Replace placeholder in the code.")
-
     print(f"Processing authenticated request with parallel embedding")
     try:
-        # NOTE: The helper functions below are assumed to be in your 'src/helper.py' file.
         # 1. Load document from URL
-        # docs = load_doc_from_url(request.documents)
-        # if not docs:
-        #     raise HTTPException(status_code=400, detail="Could not load or process document from URL.")
+        docs = load_doc_from_url(request.documents)
+        if not docs:
+            raise HTTPException(status_code=400, detail="Could not load or process document from URL.")
 
         # 2. Split document into chunks
-        # text_chunks = text_split(docs)
-        # if not text_chunks:
-        #     raise HTTPException(status_code=500, detail="Failed to split the document.")
-
-        # The lines above are commented out because the helper functions are not available.
-        # You should uncomment them and ensure 'src/helper.py' is present.
-        # For demonstration, we'll use a placeholder for text_chunks.
-        text_chunks = ["This is a placeholder chunk."] # Replace with your actual text_split call
+        text_chunks = text_split(docs)
+        if not text_chunks:
+            raise HTTPException(status_code=500, detail="Failed to split the document.")
 
         # 3. Create Embeddings in PARALLEL
+        # The `aembed_documents` method handles concurrent API calls efficiently.
         print(f"Starting parallel embedding for {len(text_chunks)} chunks...")
-        chunk_texts = [chunk.page_content if hasattr(chunk, 'page_content') else chunk for chunk in text_chunks]
+        chunk_texts = [chunk.page_content for chunk in text_chunks]
         chunk_embeddings = await embeddings.aembed_documents(chunk_texts)
         print("...Parallel embedding complete.")
 
@@ -120,6 +92,7 @@ async def run_hackrx(
         text_embedding_pairs = list(zip(chunk_texts, chunk_embeddings))
 
         # 4. Create FAISS vector store from the pre-computed embeddings
+        # This is much faster as no API calls are made here.
         vector_store = FAISS.from_embeddings(
             text_embeddings=text_embedding_pairs,
             embedding=embeddings
@@ -135,7 +108,6 @@ async def run_hackrx(
             """Helper function to invoke the RAG chain asynchronously."""
             result = await rag_chain.ainvoke({"input": question})
             answer = result.get("answer", "Could not find an answer.")
-            # MODIFIED LINE: Clean the answer string before returning
             return answer.strip()
 
         tasks = [get_answer(q) for q in request.questions]
@@ -155,9 +127,3 @@ def read_root():
 @app.get("/health", tags=["Monitoring"])
 def health_check():
     return {"status": "healthy"}
-
-# NOTE: The code for running with uvicorn is typically in a separate run.py file
-# or executed from the command line, e.g., `uvicorn main:app --reload`
-# If you need to run this file directly, you could add:
-# if __name__ == "__main__":
-#     uvicorn.run(app, host="0.0.0.0", port=8000)
