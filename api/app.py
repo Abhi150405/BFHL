@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import uvicorn
 
-from langchain_groq import ChatGroq
+# --- MODIFIED IMPORT ---
+# Switched from ChatGroq to ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
@@ -22,9 +24,9 @@ from src.prompt import system_prompt
 load_dotenv()
 
 app = FastAPI(
-    title="Parallel Document Q&A API",
-    description="An API that uses FAISS and parallel embedding to answer questions about a document.",
-    version="2.1.0"
+    title="Parallel Document Q&A API with Gemini Pro",
+    description="An API that uses FAISS and Gemini Pro to answer questions about a document.",
+    version="2.2.0"
 )
 
 # --- Authentication ---
@@ -53,7 +55,11 @@ class HackRxResponse(BaseModel):
 
 # --- Initialize RAG Components ---
 embeddings = download_hugging_face_embeddings()
-llm = ChatGroq(model="gemma2-9b-it", temperature=0.2)
+
+# --- MODIFIED INITIALIZATION ---
+# Changed llm from ChatGroq to ChatGoogleGenerativeAI with the "gemini-pro" model
+llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.2)
+
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
     ("human", "{input}")
