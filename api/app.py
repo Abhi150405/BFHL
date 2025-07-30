@@ -8,15 +8,14 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import uvicorn
 
-# --- MODIFIED IMPORT ---
-# Switched from ChatGroq to ChatGoogleGenerativeAI
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import FAISS
 
-# Local helper and prompt imports
+# This assumes your helper and prompt files are in a 'src' directory
+# and you have an empty 'src/__init__.py' file.
 from src.helper import load_doc_from_url, text_split, download_hugging_face_embeddings
 from src.prompt import system_prompt
 
@@ -24,9 +23,9 @@ from src.prompt import system_prompt
 load_dotenv()
 
 app = FastAPI(
-    title="Parallel Document Q&A API with Gemini Pro",
-    description="An API that uses FAISS and Gemini Pro to answer questions about a document.",
-    version="2.2.0"
+    title="Parallel Document Q&A API with Dual Groq Keys",
+    description="An API that load balances questions across two Groq models while preserving question order.",
+    version="2.4.0"
 )
 
 # --- Authentication ---
@@ -35,9 +34,7 @@ auth_scheme = HTTPBearer()
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(auth_scheme)):
     """Dependency to validate the Bearer token."""
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="BEARER_TOKEN not configured on the server.")
-    if credentials.scheme != "Bearer" or credentials.credentials != API_KEY:
+    if not API_KEY or credentials.scheme != "Bearer" or credentials.credentials != API_KEY:
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key",
@@ -45,7 +42,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
         )
     return credentials
 
-# --- Pydantic Models for API Schema ---
+# --- Pydantic Models ---
 class HackRxRequest(BaseModel):
     documents: str = Field(..., description="URL to the policy document.")
     questions: List[str] = Field(..., description="A list of questions about the document.")
@@ -55,68 +52,60 @@ class HackRxResponse(BaseModel):
 
 # --- Initialize RAG Components ---
 embeddings = download_hugging_face_embeddings()
-
-# --- MODIFIED INITIALIZATION ---
-# Changed llm from ChatGroq to ChatGoogleGenerativeAI with the "gemini-pro" model
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite", temperature=0.2)
-
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
     ("human", "{input}")
 ])
 
+# Initialize two LLM clients with separate keys from your .env file
+api_key_1 = os.getenv("GROQ_API_KEY1")
+api_key_2 = os.getenv("GROQ_API_KEY")
+
+if not api_key_1 or not api_key_2:
+    raise ValueError("Both GROQ_API_KEY1 and GROQ_API_KEY2 must be set in the .env file.")
+
+# Create a list of LLM clients, one for each API key
+llms = [
+    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_1),
+    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_2)
+]
+
 # --- API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
 async def run_hackrx(
     request: HackRxRequest,
-    user: str = Depends(get_current_user)  # Enforces authentication
+    user: str = Depends(get_current_user)
 ):
-    """
-    Processes a document from a URL using a temporary FAISS index
-    with embeddings created in parallel.
-    """
-    print(f"Processing authenticated request with parallel embedding")
+    print(f"Processing authenticated request with parallel embedding and dual Groq keys")
     try:
-        # 1. Load document from URL
+        # Document loading, chunking, and FAISS creation
         docs = load_doc_from_url(request.documents)
-        if not docs:
-            raise HTTPException(status_code=400, detail="Could not load or process document from URL.")
-
-        # 2. Split document into chunks
         text_chunks = text_split(docs)
-        if not text_chunks:
-            raise HTTPException(status_code=500, detail="Failed to split the document.")
-
-        # 3. Create Embeddings in PARALLEL
-        # The `aembed_documents` method handles concurrent API calls efficiently.
-        print(f"Starting parallel embedding for {len(text_chunks)} chunks...")
         chunk_texts = [chunk.page_content for chunk in text_chunks]
         chunk_embeddings = await embeddings.aembed_documents(chunk_texts)
-        print("...Parallel embedding complete.")
-
-        # Combine the texts and their corresponding embeddings
         text_embedding_pairs = list(zip(chunk_texts, chunk_embeddings))
-
-        # 4. Create FAISS vector store from the pre-computed embeddings
-        # This is much faster as no API calls are made here.
         vector_store = FAISS.from_embeddings(
             text_embeddings=text_embedding_pairs,
             embedding=embeddings
         )
-
-        # 5. Create retriever and RAG chain
         retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-        document_chain = create_stuff_documents_chain(llm, prompt)
-        rag_chain = create_retrieval_chain(retriever, document_chain)
 
-        # 6. Generate answers for all questions CONCURRENTLY
-        async def get_answer(question: str):
-            """Helper function to invoke the RAG chain asynchronously."""
+        # Helper function to process a single question with a specific LLM client
+        async def get_answer(question: str, llm_client: ChatGroq):
+            document_chain = create_stuff_documents_chain(llm_client, prompt)
+            rag_chain = create_retrieval_chain(retriever, document_chain)
             result = await rag_chain.ainvoke({"input": question})
-            answer = result.get("answer", "Could not find an answer.")
-            return answer.strip()
+            return result.get("answer", "Could not find an answer.").strip()
 
-        tasks = [get_answer(q) for q in request.questions]
+        # Create tasks, distributing questions between the LLM clients
+        tasks = []
+        for i, question in enumerate(request.questions):
+            # Use the modulo operator (%) for round-robin distribution
+            llm_to_use = llms[i % len(llms)]
+            tasks.append(get_answer(question, llm_to_use))
+
+        # Run all tasks concurrently. asyncio.gather preserves the order of the
+        # tasks, so the 'answers' list will match the original question order.
         answers = await asyncio.gather(*tasks)
 
         return HackRxResponse(answers=answers)
