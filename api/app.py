@@ -84,7 +84,7 @@ async def run_hackrx(
             text_embeddings=text_embedding_pairs,
             embedding=embeddings
         )
-        retriever = vector_store.as_retriever(search_kwargs={"k": 2})
+        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
 
         # Helper function to process a single question
         async def get_answer(question: str):
