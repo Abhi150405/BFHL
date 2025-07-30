@@ -23,8 +23,8 @@ from src.prompt import system_prompt
 load_dotenv()
 
 app = FastAPI(
-    title="Parallel Document Q&A API with Dual Groq Keys",
-    description="An API that load balances questions across two Groq models while preserving question order.",
+    title="Document Q&A API with Single Groq Model",
+    description="An API that processes questions using a single Groq model.",
     version="2.4.0"
 )
 
@@ -57,21 +57,14 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}")
 ])
 
-# Initialize two LLM clients with separate keys from your .env file
-api_key_1 = os.getenv("GROQ_API_KEY1")
-api_key_2 = os.getenv("GROQ_API_KEY")
-api_key_3 = os.getenv("GROQ_API_KEY2")
+# Initialize single LLM client
+api_key = os.getenv("GROQ_API_KEY")
 
-if not api_key_1 or not api_key_2:
-    raise ValueError("Both GROQ_API_KEY1 and GROQ_API_KEY2 must be set in the .env file.")
+if not api_key:
+    raise ValueError("GROQ_API_KEY must be set in the .env file.")
 
-# Create a list of LLM clients, one for each API key
-llms = [
-    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_1),
-    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_2),
-    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_3)
-    
-]
+# Create single LLM client
+llm = ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key)
 
 # --- API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
@@ -79,7 +72,7 @@ async def run_hackrx(
     request: HackRxRequest,
     user: str = Depends(get_current_user)
 ):
-    print(f"Processing authenticated request with parallel embedding and dual Groq keys")
+    print(f"Processing authenticated request with single Groq model")
     try:
         # Document loading, chunking, and FAISS creation
         docs = load_doc_from_url(request.documents)
@@ -93,19 +86,15 @@ async def run_hackrx(
         )
         retriever = vector_store.as_retriever(search_kwargs={"k": 2})
 
-        # Helper function to process a single question with a specific LLM client
-        async def get_answer(question: str, llm_client: ChatGroq):
-            document_chain = create_stuff_documents_chain(llm_client, prompt)
+        # Helper function to process a single question
+        async def get_answer(question: str):
+            document_chain = create_stuff_documents_chain(llm, prompt)
             rag_chain = create_retrieval_chain(retriever, document_chain)
             result = await rag_chain.ainvoke({"input": question})
             return result.get("answer", "Could not find an answer.").strip()
 
-        # Create tasks, distributing questions between the LLM clients
-        tasks = []
-        for i, question in enumerate(request.questions):
-            # Use the modulo operator (%) for round-robin distribution
-            llm_to_use = llms[i % len(llms)]
-            tasks.append(get_answer(question, llm_to_use))
+        # Create tasks for all questions using the single LLM
+        tasks = [get_answer(question) for question in request.questions]
 
         # Run all tasks concurrently. asyncio.gather preserves the order of the
         # tasks, so the 'answers' list will match the original question order.
