@@ -60,6 +60,7 @@ prompt = ChatPromptTemplate.from_messages([
 # Initialize two LLM clients with separate keys from your .env file
 api_key_1 = os.getenv("GROQ_API_KEY1")
 api_key_2 = os.getenv("GROQ_API_KEY")
+api_key_3 = os.getenv("GROQ_API_KEY2")
 
 if not api_key_1 or not api_key_2:
     raise ValueError("Both GROQ_API_KEY1 and GROQ_API_KEY2 must be set in the .env file.")
@@ -67,7 +68,9 @@ if not api_key_1 or not api_key_2:
 # Create a list of LLM clients, one for each API key
 llms = [
     ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_1),
-    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_2)
+    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_2),
+    ChatGroq(model_name="gemma2-9b-it", temperature=0.2, api_key=api_key_3)
+    
 ]
 
 # --- API Endpoint ---
