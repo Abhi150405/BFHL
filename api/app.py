@@ -91,7 +91,7 @@ async def run_hackrx(
             text_embeddings=text_embedding_pairs,
             embedding=embeddings
         )
-        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+        retriever = vector_store.as_retriever(search_kwargs={"k": 2})
 
         # Helper function to process a single question with a specific LLM client
         async def get_answer(question: str, llm_client: ChatGroq):
