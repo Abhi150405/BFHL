@@ -58,7 +58,7 @@ embeddings = download_hugging_face_embeddings()
 
 # --- MODIFIED INITIALIZATION ---
 # Changed llm from ChatGroq to ChatGoogleGenerativeAI with the "gemini-pro" model
-llm = ChatGoogleGenerativeAI(model="Gemini 2.0 Flash-Lite", temperature=0.2)
+llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite", temperature=0.2)
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
