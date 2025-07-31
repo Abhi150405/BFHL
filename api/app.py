@@ -66,7 +66,8 @@ if not api_key:
     raise ValueError("GROQ_API_KEY must be set in the .env file.")
 
 # Create single LLM client
-llm = ChatOpenAI(model="gpt-4o-mini")
+# llm = ChatOpenAI(model="gpt-4o-mini")
+llm = ChatGroq(model="gemma2-9b-it",api_key=api_key)
 
 # --- API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
