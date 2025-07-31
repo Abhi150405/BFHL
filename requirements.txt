@@ -15,3 +15,4 @@ google-generativeai
 langchain-google-genai
 pydantic
 typing-extensions
+langchain-openai
