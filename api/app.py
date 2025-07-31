@@ -1,12 +1,14 @@
 import os
 import asyncio
 from typing import List
+from datetime import datetime
 
-from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi import FastAPI, Depends, HTTPException, Security, Request as FastAPIRequest
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import uvicorn
+from pymongo import MongoClient
 
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
@@ -29,6 +31,15 @@ app = FastAPI(
     description="An API that processes questions using a single Groq model.",
     version="2.4.0"
 )
+
+# --- Database Connection ---
+MONGO_DB_URL = os.getenv("MONGO_DB_URL")
+if not MONGO_DB_URL:
+    raise ValueError("MONGO_DB_URL must be set in the .env file.")
+
+client = MongoClient(MONGO_DB_URL)
+db = client.get_database("api_requests") # Or choose your preferred database name
+requests_collection = db.get_collection("requests")
 
 # --- Authentication ---
 API_KEY = os.getenv("BEARER_TOKEN")
@@ -73,6 +84,7 @@ llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite",api_key=os.getenv("GO
 # --- API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
 async def run_hackrx(
+    fastapi_req: FastAPIRequest,
     request: HackRxRequest,
     user: str = Depends(get_current_user)
 ):
@@ -103,6 +115,17 @@ async def run_hackrx(
         # Run all tasks concurrently. asyncio.gather preserves the order of the
         # tasks, so the 'answers' list will match the original question order.
         answers = await asyncio.gather(*tasks)
+
+        # Log the request and response to MongoDB
+        log_entry = {
+            "timestamp": datetime.utcnow(),
+            "request_ip": fastapi_req.client.host,
+            "request_body": request.dict(),
+            "response_body": {"answers": answers},
+            "user": user.credentials, # Caution: logging the API key itself might be a security risk
+        }
+        requests_collection.insert_one(log_entry)
+
 
         return HackRxResponse(answers=answers)
 
