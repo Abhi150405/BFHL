@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import uvicorn
 
 from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -65,7 +66,7 @@ if not api_key:
     raise ValueError("GROQ_API_KEY must be set in the .env file.")
 
 # Create single LLM client
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite")
+llm = ChatOpenAI(model="gpt-4o-mini"
 
 # --- API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
