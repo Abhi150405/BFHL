@@ -16,3 +16,4 @@ langchain-google-genai
 pydantic
 typing-extensions
 langchain-openai
+pymongo
