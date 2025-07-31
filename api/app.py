@@ -65,7 +65,7 @@ if not api_key:
     raise ValueError("GROQ_API_KEY must be set in the .env file.")
 
 # Create single LLM client
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite")
 
 # --- API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
