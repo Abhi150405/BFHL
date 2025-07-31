@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import uvicorn
 
 from langchain_groq import ChatGroq
-from langchain_google import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
