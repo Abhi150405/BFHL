@@ -67,7 +67,8 @@ if not api_key:
 
 # Create single LLM client
 # llm = ChatOpenAI(model="gpt-4o-mini")
-llm = ChatGroq(model="gemma2-9b-it",api_key=api_key)
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite",api_key=os.getenv("GOOGLE_API_KEY1"))
+
 
 # --- API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
