@@ -60,7 +60,7 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # Initialize single LLM client
-api_key = os.getenv("GROQ_API_KEY")
+api_key = os.getenv("GOOGLE_API_KEY1")
 
 if not api_key:
     raise ValueError("GROQ_API_KEY must be set in the .env file.")
