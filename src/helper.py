@@ -4,26 +4,39 @@ import requests
 import tempfile
 from urllib.parse import urlparse
 from langchain_community.document_loaders import (
-    PyMuPDFLoader,  # Switched to the faster PyMuPDFLoader
+    PyMuPDFLoader,
     UnstructuredWordDocumentLoader,
-    UnstructuredEmailLoader
+    UnstructuredEmailLoader,
+    UnstructuredXMLLoader,
+    RSSFeedLoader
 )
+from langchain_unstructured import UnstructuredLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 def load_doc_from_url(url: str):
     """
-    Loads a document (PDF, Word, or Email) from a given URL by processing it
+    Loads a document (PDF, Word, Email, XML, etc.) from a given URL by processing it
     from a temporary file for maximum compatibility and speed.
     Raises exceptions with clear error messages on failure.
     """
+    # Get the filename from the URL to determine the correct suffix
+    file_name = os.path.basename(urlparse(url).path)
+    
+    # Special handling for RSS feeds - they don't need to be downloaded first
+    if file_name.lower().endswith('.rss'):
+        print(f"Processing RSS feed from {url}...")
+        loader = RSSFeedLoader(urls=[url])
+        print("Parsing RSS content...")
+        documents = loader.load()
+        print("RSS parsing complete.")
+        return documents
+    
     try:
-        # Download the document content into an in-memory bytes buffer
+        # Download the document content
         print(f"Downloading document from {url}...")
         response = requests.get(url)
         response.raise_for_status()  # Raise an exception for bad status codes
         
-        # Get the filename from the URL to determine the correct suffix
-        file_name = os.path.basename(urlparse(url).path)
         suffix = os.path.splitext(file_name)[1]
 
         # Create a temporary file to store the downloaded content
@@ -36,17 +49,21 @@ def load_doc_from_url(url: str):
         loader = None
         # Determine the correct loader based on the file extension
         if file_name.lower().endswith('.pdf'):
-            # Use the much faster PyMuPDFLoader with the file path
+            # Use the much faster PyMuPDFLoader for PDFs
             loader = PyMuPDFLoader(file_path=temp_file_path)
         elif file_name.lower().endswith('.docx'):
             loader = UnstructuredWordDocumentLoader(file_path=temp_file_path)
         elif file_name.lower().endswith(('.eml', '.msg')):
             loader = UnstructuredEmailLoader(file_path=temp_file_path)
+        elif file_name.lower().endswith('.xml'):
+            # Added handler for XML files
+            loader = UnstructuredXMLLoader(file_path=temp_file_path)
         else:
-            os.unlink(temp_file_path) # Clean up before raising error
-            raise ValueError(f"Unsupported file type for URL: {url}. Only PDF, Word (.docx), and Email (.eml/.msg) are supported.")
+            # General fallback for other file types supported by 'unstructured'
+            print(f"Using generic file loader for '{file_name}'.")
+            loader = UnstructuredLoader(file_path=temp_file_path)
 
-        # Load the document. This is the CPU-intensive part that is now much faster.
+        # Load the document.
         print("Parsing document content...")
         documents = loader.load()
         print("Document parsing complete.")
