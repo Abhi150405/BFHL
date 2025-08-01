@@ -14,4 +14,4 @@ python-dotenv
 google-generativeai
 langchain-google-genai
 pydantic
-
+pymongo
