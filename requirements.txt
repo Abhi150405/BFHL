@@ -6,14 +6,13 @@ langchain-core
 langchain-experimental
 langchain-groq
 faiss-cpu
-unstructured
+"unstructured[pdf]"
 python-docx
 pypdf
+PyMuPDF
 requests
 python-dotenv
 google-generativeai
 langchain-google-genai
 pydantic
 typing-extensions
-langchain-openai
-pymongo
