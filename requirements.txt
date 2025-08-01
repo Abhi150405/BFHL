@@ -6,7 +6,7 @@ langchain-core
 langchain-experimental
 langchain-groq
 faiss-cpu
-"unstructured[pdf]"
+unstructured[pdf]
 python-docx
 pypdf
 PyMuPDF
