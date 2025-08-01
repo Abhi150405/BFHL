@@ -9,5 +9,9 @@ Follow these rules without exception:
 4.  **Direct and Factual:** Provide a direct, factual answer. Avoid conversational fillers, opinions, or introductory phrases.
 
 Context from the document:
-{context}"""
+{context}
+
+Question: {input}
+
+Please answer the question based on the provided context."""
 )
