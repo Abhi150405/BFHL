@@ -88,19 +88,15 @@ def is_scenario_question(question: str) -> bool:
         "situation", "process for", "steps to", "procedure for"
     ]
     
-    # Check for multiple sub-questions (indicated by multiple question words/phrases)
     question_indicators = ["what", "how", "when", "where", "why", "can", "is", "are", "does", "do"]
     question_count = sum(1 for indicator in question_indicators if indicator in question.lower())
     
-    # Check for scenario indicators
     has_scenario_indicators = any(indicator in question.lower() for indicator in scenario_indicators)
     
-    # Consider it a scenario question if it has scenario indicators OR multiple sub-questions
     return has_scenario_indicators or question_count >= 2
 
 def extract_sub_questions(question: str) -> List[str]:
     """Extract individual sub-questions from a complex scenario question."""
-    # Split on common connectors
     parts = []
     connectors = [", also ", " and ", ", and ", ", what ", ", how ", ", when ", ", where ", ", can ", ", is "]
     
@@ -111,15 +107,13 @@ def extract_sub_questions(question: str) -> List[str]:
             parts.append(split_parts[0].strip())
             current_part = split_parts[1].strip()
     
-    # Add the remaining part
     if current_part:
         parts.append(current_part.strip())
     
-    # Clean up parts and ensure they're proper questions
     cleaned_parts = []
     for part in parts:
         part = part.strip()
-        if part and len(part) > 10:  # Filter out very short fragments
+        if part and len(part) > 10:
             if not part.endswith('?'):
                 part += '?'
             cleaned_parts.append(part)
@@ -139,7 +133,6 @@ def group_pages(pages: List[Document], pages_per_group: int = 8, overlap_pages: 
         combined_content = "\n\n".join([page.page_content for page in group])
         first_page_metadata = group[0].metadata if group else {}
         
-        # Add page range to metadata for better tracking
         first_page_metadata['page_range'] = f"{i+1}-{min(i+pages_per_group, len(pages))}"
         
         grouped_docs.append(Document(page_content=combined_content, metadata=first_page_metadata))
@@ -159,22 +152,24 @@ async def process_group_to_embeddings(doc_group: Document) -> List[Tuple[str, Li
         print(f"Error processing document group: {e}")
         return []
 
+def clean_answer(answer: str) -> str:
+    """Cleans the answer to be on a single line and removes markdown."""
+    cleaned = answer.replace("\n", " ").replace("**", "")
+    # Replace multiple spaces with a single space and strip leading/trailing spaces
+    return " ".join(cleaned.split()).strip()
+
 # --- Enhanced Q&A Processing ---
 
 async def get_enhanced_answer(question: str, retriever, is_scenario: bool = False):
     """Enhanced answer generation with scenario-aware prompting."""
     try:
-        # Use different retrieval strategies based on question type
         if is_scenario:
-            # For scenario questions, retrieve more documents
             search_kwargs = {"k": 10, "fetch_k": 20}
         else:
             search_kwargs = {"k": 5, "fetch_k": 10}
         
-        # Update retriever with new search parameters
         retriever.search_kwargs = search_kwargs
         
-        # Choose appropriate prompt template
         if is_scenario:
             qa_prompt = ChatPromptTemplate.from_template(get_scenario_prompt())
         else:
@@ -186,14 +181,12 @@ async def get_enhanced_answer(question: str, retriever, is_scenario: bool = Fals
         result = await rag_chain.ainvoke({"input": question})
         answer = result.get("answer", "Could not find an answer.").strip()
         
-        # Post-process answer to ensure it's not too generic
         if len(answer) < 20 or "not available" in answer.lower():
-            # Try with a broader search
             retriever.search_kwargs = {"k": 15, "fetch_k": 30}
             result = await rag_chain.ainvoke({"input": question})
             answer = result.get("answer", "Could not find an answer.").strip()
         
-        return answer
+        return clean_answer(answer)
         
     except Exception as e:
         print(f"Error generating answer for question '{question}': {e}")
@@ -201,34 +194,24 @@ async def get_enhanced_answer(question: str, retriever, is_scenario: bool = Fals
 
 async def process_scenario_question(question: str, retriever) -> str:
     """Process complex scenario questions by breaking them down."""
-    # Check if it's a scenario question
     if not is_scenario_question(question):
         return await get_enhanced_answer(question, retriever, is_scenario=False)
     
-    # Extract sub-questions
     sub_questions = extract_sub_questions(question)
     
     if len(sub_questions) == 1:
-        # Single complex question
         return await get_enhanced_answer(question, retriever, is_scenario=True)
     
-    # Multiple sub-questions - process each in parallel and combine
     print(f"Processing scenario question with {len(sub_questions)} parts in parallel")
     
-    # Create tasks for parallel processing
     sub_tasks = [get_enhanced_answer(sub_q, retriever, is_scenario=True) for sub_q in sub_questions]
     sub_answers = await asyncio.gather(*sub_tasks)
     
-    # Format the answers with numbering
-    formatted_answers = [f"{i+1}. {answer}" for i, answer in enumerate(sub_answers)]
+    # Combine answers into a single-line response
+    combined_answer = " ".join(sub_answers)
     
-    # Combine answers into a comprehensive response
-    combined_answer = "\n\n".join(formatted_answers)
-    
-    # If the combined answer is too long, try to get a unified answer
     if len(combined_answer) > 500:
         unified_answer = await get_enhanced_answer(question, retriever, is_scenario=True)
-        # Use the better of the two approaches
         if len(unified_answer) > 50 and "not available" not in unified_answer.lower():
             return unified_answer
     
@@ -257,7 +240,6 @@ async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: 
         if not pages:
             raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
         
-        # Enhanced grouping for better context preservation
         large_chunks = group_pages(pages, pages_per_group=8, overlap_pages=3)
         
         embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
@@ -272,16 +254,13 @@ async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: 
         print(f"Saving new FAISS index to cache: {cache_path}")
         vector_store.save_local(cache_path)
 
-    # Create retriever
     retriever = vector_store.as_retriever()
     
     print(f"Processing {len(request.questions)} questions with enhanced scenario handling...")
     
-    # Process each question with scenario awareness
     qa_tasks = [process_scenario_question(q, retriever) for q in request.questions]
     answers = await asyncio.gather(*qa_tasks)
 
-    # Log the request
     try:
         log_entry = {
             "timestamp": datetime.utcnow(),
