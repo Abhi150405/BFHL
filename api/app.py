@@ -212,17 +212,18 @@ async def process_scenario_question(question: str, retriever) -> str:
         # Single complex question
         return await get_enhanced_answer(question, retriever, is_scenario=True)
     
-    # Multiple sub-questions - process each and combine
-    print(f"Processing scenario question with {len(sub_questions)} parts")
-    sub_answers = []
+    # Multiple sub-questions - process each in parallel and combine
+    print(f"Processing scenario question with {len(sub_questions)} parts in parallel")
     
-    for i, sub_q in enumerate(sub_questions, 1):
-        print(f"  Processing sub-question {i}: {sub_q[:50]}...")
-        answer = await get_enhanced_answer(sub_q, retriever, is_scenario=True)
-        sub_answers.append(f"{i}. {answer}")
+    # Create tasks for parallel processing
+    sub_tasks = [get_enhanced_answer(sub_q, retriever, is_scenario=True) for sub_q in sub_questions]
+    sub_answers = await asyncio.gather(*sub_tasks)
+    
+    # Format the answers with numbering
+    formatted_answers = [f"{i+1}. {answer}" for i, answer in enumerate(sub_answers)]
     
     # Combine answers into a comprehensive response
-    combined_answer = "\n\n".join(sub_answers)
+    combined_answer = "\n\n".join(formatted_answers)
     
     # If the combined answer is too long, try to get a unified answer
     if len(combined_answer) > 500:
