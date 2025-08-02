@@ -19,22 +19,20 @@ from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 
-# This assumes your helper and prompt files are in a 'src' directory
+# Updated imports for enhanced functionality
 from src.helper import load_doc_from_url, download_hugging_face_embeddings
-from src.prompt import system_prompt
+from src.prompt import get_scenario_prompt, get_simple_prompt
 
 # --- Configuration and Initialization ---
 load_dotenv()
 
-# Define a directory to store the cached FAISS indexes
 FAISS_INDEX_DIR = "faiss_cache"
 os.makedirs(FAISS_INDEX_DIR, exist_ok=True)
 
-
 app = FastAPI(
-    title="Cached Parallel RAG API",
-    description="Uses a file-based cache to skip embedding generation for previously processed documents.",
-    version="10.0.0"
+    title="Enhanced Scenario-Aware RAG API",
+    description="Handles complex scenario-based questions with improved context understanding.",
+    version="11.0.0"
 )
 
 # --- Database Connection ---
@@ -50,7 +48,6 @@ API_KEY = os.getenv("BEARER_TOKEN")
 auth_scheme = HTTPBearer()
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(auth_scheme)):
-    """Dependency to validate the Bearer token."""
     if not API_KEY or credentials.scheme != "Bearer" or credentials.credentials != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key", headers={"WWW-Authenticate": "Bearer"})
     return credentials
@@ -67,73 +64,200 @@ class HackRxResponse(BaseModel):
 embeddings = download_hugging_face_embeddings()
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
-    api_key=os.getenv("GOOGLE_API_KEY1")
+    api_key=os.getenv("GOOGLE_API_KEY1"),
+    temperature=0.1  # Lower temperature for more consistent answers
 )
 if not os.getenv("GOOGLE_API_KEY1"):
     raise ValueError("GOOGLE_API_KEY1 must be set in the .env file.")
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+# Improved text splitter with better chunk handling
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=800,  # Slightly smaller chunks for better granularity
+    chunk_overlap=200,  # More overlap to preserve context
+    separators=["\n\n", "\n", ". ", " ", ""]  # Better separation logic
+)
 
-# --- Helper Functions for Parallel Group Processing ---
+# --- Enhanced Helper Functions ---
 
-def group_pages(pages: List[Document], pages_per_group: int = 10, overlap_pages: int = 2) -> List[Document]:
-    """Groups document pages into larger Document objects for processing, with overlap."""
+def is_scenario_question(question: str) -> bool:
+    """Detect if a question is scenario-based and complex."""
+    scenario_indicators = [
+        "while", "for a", "involving", "in case of", "when", "if",
+        "also confirm", "also provide", "what supporting", "how to",
+        "can a", "is it possible", "what happens if", "scenario",
+        "situation", "process for", "steps to", "procedure for"
+    ]
+    
+    # Check for multiple sub-questions (indicated by multiple question words/phrases)
+    question_indicators = ["what", "how", "when", "where", "why", "can", "is", "are", "does", "do"]
+    question_count = sum(1 for indicator in question_indicators if indicator in question.lower())
+    
+    # Check for scenario indicators
+    has_scenario_indicators = any(indicator in question.lower() for indicator in scenario_indicators)
+    
+    # Consider it a scenario question if it has scenario indicators OR multiple sub-questions
+    return has_scenario_indicators or question_count >= 2
+
+def extract_sub_questions(question: str) -> List[str]:
+    """Extract individual sub-questions from a complex scenario question."""
+    # Split on common connectors
+    parts = []
+    connectors = [", also ", " and ", ", and ", ", what ", ", how ", ", when ", ", where ", ", can ", ", is "]
+    
+    current_part = question
+    for connector in connectors:
+        if connector in current_part.lower():
+            split_parts = current_part.split(connector, 1)
+            parts.append(split_parts[0].strip())
+            current_part = split_parts[1].strip()
+    
+    # Add the remaining part
+    if current_part:
+        parts.append(current_part.strip())
+    
+    # Clean up parts and ensure they're proper questions
+    cleaned_parts = []
+    for part in parts:
+        part = part.strip()
+        if part and len(part) > 10:  # Filter out very short fragments
+            if not part.endswith('?'):
+                part += '?'
+            cleaned_parts.append(part)
+    
+    return cleaned_parts if len(cleaned_parts) > 1 else [question]
+
+def group_pages(pages: List[Document], pages_per_group: int = 8, overlap_pages: int = 3) -> List[Document]:
+    """Enhanced grouping with better overlap for context preservation."""
     grouped_docs = []
-    # Ensure the step is at least 1 to avoid infinite loops
-    step = pages_per_group - overlap_pages if pages_per_group > overlap_pages else 1
+    step = max(1, pages_per_group - overlap_pages)
         
     for i in range(0, len(pages), step):
         group = pages[i : i + pages_per_group]
         if not group:
-            break # Exit if no more pages are left
+            break
             
         combined_content = "\n\n".join([page.page_content for page in group])
         first_page_metadata = group[0].metadata if group else {}
+        
+        # Add page range to metadata for better tracking
+        first_page_metadata['page_range'] = f"{i+1}-{min(i+pages_per_group, len(pages))}"
+        
         grouped_docs.append(Document(page_content=combined_content, metadata=first_page_metadata))
     return grouped_docs
 
 async def process_group_to_embeddings(doc_group: Document) -> List[Tuple[str, List[float]]]:
-    """
-    Takes a large Document group, chunks it, and generates embeddings.
-    """
+    """Enhanced processing with better error handling."""
     try:
         chunks = text_splitter.split_documents([doc_group])
-        if not chunks: return []
+        if not chunks: 
+            return []
+        
         chunk_texts = [chunk.page_content for chunk in chunks]
         chunk_embeddings = await embeddings.aembed_documents(chunk_texts)
         return list(zip(chunk_texts, chunk_embeddings))
     except Exception as e:
-        print(f"Error processing a document group (metadata: {doc_group.metadata}): {e}")
+        print(f"Error processing document group: {e}")
         return []
 
-# --- API Endpoint ---
+# --- Enhanced Q&A Processing ---
+
+async def get_enhanced_answer(question: str, retriever, is_scenario: bool = False):
+    """Enhanced answer generation with scenario-aware prompting."""
+    try:
+        # Use different retrieval strategies based on question type
+        if is_scenario:
+            # For scenario questions, retrieve more documents
+            search_kwargs = {"k": 10, "fetch_k": 20}
+        else:
+            search_kwargs = {"k": 5, "fetch_k": 10}
+        
+        # Update retriever with new search parameters
+        retriever.search_kwargs = search_kwargs
+        
+        # Choose appropriate prompt template
+        if is_scenario:
+            qa_prompt = ChatPromptTemplate.from_template(get_scenario_prompt())
+        else:
+            qa_prompt = ChatPromptTemplate.from_template(get_simple_prompt())
+        
+        document_chain = create_stuff_documents_chain(llm, qa_prompt)
+        rag_chain = create_retrieval_chain(retriever, document_chain)
+        
+        result = await rag_chain.ainvoke({"input": question})
+        answer = result.get("answer", "Could not find an answer.").strip()
+        
+        # Post-process answer to ensure it's not too generic
+        if len(answer) < 20 or "not available" in answer.lower():
+            # Try with a broader search
+            retriever.search_kwargs = {"k": 15, "fetch_k": 30}
+            result = await rag_chain.ainvoke({"input": question})
+            answer = result.get("answer", "Could not find an answer.").strip()
+        
+        return answer
+        
+    except Exception as e:
+        print(f"Error generating answer for question '{question}': {e}")
+        return "An error occurred while processing this question."
+
+async def process_scenario_question(question: str, retriever) -> str:
+    """Process complex scenario questions by breaking them down."""
+    # Check if it's a scenario question
+    if not is_scenario_question(question):
+        return await get_enhanced_answer(question, retriever, is_scenario=False)
+    
+    # Extract sub-questions
+    sub_questions = extract_sub_questions(question)
+    
+    if len(sub_questions) == 1:
+        # Single complex question
+        return await get_enhanced_answer(question, retriever, is_scenario=True)
+    
+    # Multiple sub-questions - process each and combine
+    print(f"Processing scenario question with {len(sub_questions)} parts")
+    sub_answers = []
+    
+    for i, sub_q in enumerate(sub_questions, 1):
+        print(f"  Processing sub-question {i}: {sub_q[:50]}...")
+        answer = await get_enhanced_answer(sub_q, retriever, is_scenario=True)
+        sub_answers.append(f"{i}. {answer}")
+    
+    # Combine answers into a comprehensive response
+    combined_answer = "\n\n".join(sub_answers)
+    
+    # If the combined answer is too long, try to get a unified answer
+    if len(combined_answer) > 500:
+        unified_answer = await get_enhanced_answer(question, retriever, is_scenario=True)
+        # Use the better of the two approaches
+        if len(unified_answer) > 50 and "not available" not in unified_answer.lower():
+            return unified_answer
+    
+    return combined_answer
+
+# --- Main API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
 async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: str = Depends(get_current_user)):
-    # Create a safe filename for the cache from a hash of the URL
     url_hash = hashlib.sha256(request.documents.encode()).hexdigest()
     cache_path = os.path.join(FAISS_INDEX_DIR, url_hash)
 
     vector_store = None
 
     if os.path.exists(cache_path):
-        # --- CACHE HIT ---
         print(f"Cache hit. Loading FAISS index from: {cache_path}")
         try:
             vector_store = FAISS.load_local(cache_path, embeddings, allow_dangerous_deserialization=True)
         except Exception as e:
             print(f"Error loading from cache: {e}. Re-generating index.")
-            vector_store = None # Force re-generation
+            vector_store = None
     
     if not vector_store:
-        # --- CACHE MISS ---
         print(f"Cache miss. Generating new embeddings for URL: {request.documents}")
         
-        # 1. Load and process the document
         pages = load_doc_from_url(request.documents)
         if not pages:
             raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
         
-        large_chunks = group_pages(pages, pages_per_group=10)
+        # Enhanced grouping for better context preservation
+        large_chunks = group_pages(pages, pages_per_group=8, overlap_pages=3)
         
         embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
         results = await asyncio.gather(*embedding_tasks)
@@ -143,26 +267,20 @@ async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: 
             raise HTTPException(status_code=500, detail="Could not process document into embeddings.")
         print(f"Generated embeddings for {len(text_embedding_pairs)} total chunks.")
 
-        # 2. Create Vector Store and save to cache
         vector_store = FAISS.from_embeddings(text_embeddings=text_embedding_pairs, embedding=embeddings)
         print(f"Saving new FAISS index to cache: {cache_path}")
         vector_store.save_local(cache_path)
 
-    # --- Continue to Q&A with the (newly created or cached) vector store ---
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-
-    async def get_answer(question: str):
-        qa_prompt = ChatPromptTemplate.from_template(system_prompt) # Using the single-question prompt
-        document_chain = create_stuff_documents_chain(llm, qa_prompt)
-        rag_chain = create_retrieval_chain(retriever, document_chain)
-        result = await rag_chain.ainvoke({"input": question})
-        return result.get("answer", "Could not find an answer.").strip()
-
-    print(f"Answering {len(request.questions)} questions in parallel...")
-    qa_tasks = [get_answer(q) for q in request.questions]
+    # Create retriever
+    retriever = vector_store.as_retriever()
+    
+    print(f"Processing {len(request.questions)} questions with enhanced scenario handling...")
+    
+    # Process each question with scenario awareness
+    qa_tasks = [process_scenario_question(q, retriever) for q in request.questions]
     answers = await asyncio.gather(*qa_tasks)
 
-    # Log and return
+    # Log the request
     try:
         log_entry = {
             "timestamp": datetime.utcnow(),
@@ -177,11 +295,10 @@ async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: 
 
     return HackRxResponse(answers=answers)
 
-
 # --- Root and Health Check Endpoints ---
 @app.get("/", include_in_schema=False)
 def read_root():
-    return {"message": "API is live. See /docs for endpoint details."}
+    return {"message": "Enhanced Scenario-Aware RAG API is live. See /docs for endpoint details."}
 
 @app.get("/health", tags=["Monitoring"])
 def health_check():
