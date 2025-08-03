@@ -1,6 +1,5 @@
 import os
 import asyncio
-import hashlib
 from typing import List, Tuple, Dict
 from datetime import datetime
 
@@ -25,9 +24,6 @@ from src.prompt import get_scenario_prompt, get_simple_prompt
 
 # --- Configuration and Initialization ---
 load_dotenv()
-
-FAISS_INDEX_DIR = "faiss_cache"
-os.makedirs(FAISS_INDEX_DIR, exist_ok=True)
 
 app = FastAPI(
     title="Enhanced Scenario-Aware RAG API",
@@ -72,8 +68,8 @@ if not os.getenv("GOOGLE_API_KEY1"):
 
 # Improved text splitter with better chunk handling
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=800,  # Slightly smaller chunks for better granularity
-    chunk_overlap=200,  # More overlap to preserve context
+    chunk_size=800,      # Slightly smaller chunks for better granularity
+    chunk_overlap=200,   # More overlap to preserve context
     separators=["\n\n", "\n", ". ", " ", ""]  # Better separation logic
 )
 
@@ -220,40 +216,27 @@ async def process_scenario_question(question: str, retriever) -> str:
 # --- Main API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
 async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: str = Depends(get_current_user)):
-    url_hash = hashlib.sha256(request.documents.encode()).hexdigest()
-    cache_path = os.path.join(FAISS_INDEX_DIR, url_hash)
-
-    vector_store = None
-
-    if os.path.exists(cache_path):
-        print(f"Cache hit. Loading FAISS index from: {cache_path}")
-        try:
-            vector_store = FAISS.load_local(cache_path, embeddings, allow_dangerous_deserialization=True)
-        except Exception as e:
-            print(f"Error loading from cache: {e}. Re-generating index.")
-            vector_store = None
+    # --- Caching logic has been removed. Embeddings are generated on every request. ---
     
-    if not vector_store:
-        print(f"Cache miss. Generating new embeddings for URL: {request.documents}")
-        
-        pages = load_doc_from_url(request.documents)
-        if not pages:
-            raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
-        
-        large_chunks = group_pages(pages, pages_per_group=8, overlap_pages=3)
-        
-        embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
-        results = await asyncio.gather(*embedding_tasks)
-        
-        text_embedding_pairs = [item for sublist in results for item in sublist]
-        if not text_embedding_pairs:
-            raise HTTPException(status_code=500, detail="Could not process document into embeddings.")
-        print(f"Generated embeddings for {len(text_embedding_pairs)} total chunks.")
+    print(f"Generating new embeddings for URL: {request.documents}")
+    
+    pages = load_doc_from_url(request.documents)
+    if not pages:
+        raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
+    
+    large_chunks = group_pages(pages, pages_per_group=8, overlap_pages=3)
+    
+    embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
+    results = await asyncio.gather(*embedding_tasks)
+    
+    text_embedding_pairs = [item for sublist in results for item in sublist]
+    if not text_embedding_pairs:
+        raise HTTPException(status_code=500, detail="Could not process document into embeddings.")
+    print(f"Generated embeddings for {len(text_embedding_pairs)} total chunks.")
 
-        vector_store = FAISS.from_embeddings(text_embeddings=text_embedding_pairs, embedding=embeddings)
-        print(f"Saving new FAISS index to cache: {cache_path}")
-        vector_store.save_local(cache_path)
-
+    # Create the vector store directly from the generated embeddings
+    vector_store = FAISS.from_embeddings(text_embeddings=text_embedding_pairs, embedding=embeddings)
+    
     retriever = vector_store.as_retriever()
     
     print(f"Processing {len(request.questions)} questions with enhanced scenario handling...")
