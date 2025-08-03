@@ -147,7 +147,7 @@ def download_hugging_face_embeddings():
     
     # Initialize with specific task type for better embeddings
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001", 
+        model="models/text-embedding-004", 
         google_api_key=api_key,
         task_type="retrieval_document"  # Optimize for document retrieval
     )
