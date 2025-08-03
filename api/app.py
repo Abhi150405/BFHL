@@ -61,7 +61,7 @@ embeddings = download_hugging_face_embeddings()
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
     api_key=os.getenv("GOOGLE_API_KEY1"),
-    temperature=0.1  # Lower temperature for more consistent answers
+    temperature=0.5  # Lower temperature for more consistent answers
 )
 if not os.getenv("GOOGLE_API_KEY1"):
     raise ValueError("GOOGLE_API_KEY1 must be set in the .env file.")
@@ -90,31 +90,6 @@ def is_scenario_question(question: str) -> bool:
     has_scenario_indicators = any(indicator in question.lower() for indicator in scenario_indicators)
     
     return has_scenario_indicators or question_count >= 2
-
-def extract_sub_questions(question: str) -> List[str]:
-    """Extract individual sub-questions from a complex scenario question."""
-    parts = []
-    connectors = [", also ", " and ", ", and ", ", what ", ", how ", ", when ", ", where ", ", can ", ", is "]
-    
-    current_part = question
-    for connector in connectors:
-        if connector in current_part.lower():
-            split_parts = current_part.split(connector, 1)
-            parts.append(split_parts[0].strip())
-            current_part = split_parts[1].strip()
-    
-    if current_part:
-        parts.append(current_part.strip())
-    
-    cleaned_parts = []
-    for part in parts:
-        part = part.strip()
-        if part and len(part) > 10:
-            if not part.endswith('?'):
-                part += '?'
-            cleaned_parts.append(part)
-    
-    return cleaned_parts if len(cleaned_parts) > 1 else [question]
 
 def group_pages(pages: List[Document], pages_per_group: int = 8, overlap_pages: int = 3) -> List[Document]:
     """Enhanced grouping with better overlap for context preservation."""
@@ -189,29 +164,15 @@ async def get_enhanced_answer(question: str, retriever, is_scenario: bool = Fals
         return "An error occurred while processing this question."
 
 async def process_scenario_question(question: str, retriever) -> str:
-    """Process complex scenario questions by breaking them down."""
-    if not is_scenario_question(question):
-        return await get_enhanced_answer(question, retriever, is_scenario=False)
+    """
+    Process questions by detecting if they are scenario-based.
+    Sends scenario questions directly to the scenario prompt without splitting.
+    """
+    is_scenario = is_scenario_question(question)
     
-    sub_questions = extract_sub_questions(question)
-    
-    if len(sub_questions) == 1:
-        return await get_enhanced_answer(question, retriever, is_scenario=True)
-    
-    print(f"Processing scenario question with {len(sub_questions)} parts in parallel")
-    
-    sub_tasks = [get_enhanced_answer(sub_q, retriever, is_scenario=True) for sub_q in sub_questions]
-    sub_answers = await asyncio.gather(*sub_tasks)
-    
-    # Combine answers into a single-line response
-    combined_answer = " ".join(sub_answers)
-    
-    if len(combined_answer) > 500:
-        unified_answer = await get_enhanced_answer(question, retriever, is_scenario=True)
-        if len(unified_answer) > 50 and "not available" not in unified_answer.lower():
-            return unified_answer
-    
-    return combined_answer
+    # Directly process the question using the appropriate prompt (scenario or simple)
+    return await get_enhanced_answer(question, retriever, is_scenario=is_scenario)
+
 
 # --- Main API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
