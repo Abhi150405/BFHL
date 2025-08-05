@@ -14,7 +14,7 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_google_genai import ChatGoogleGenerativeAI
-from src.helper import load_doc_from_url, download_hugging_face_embeddings
+from src.helper import load_doc_from_url , initialize_gemini_embeddings
 from src.prompt import get_scenario_prompt, get_simple_prompt
 
 # (Assuming helper functions like load_doc_from_url, download_hugging_face_embeddings, get_scenario_prompt, etc. are defined elsewhere)
@@ -55,9 +55,9 @@ class HackRxResponse(BaseModel):
     answers: List[str]
 
 # --- Initialize RAG Components ---
-embeddings = download_hugging_face_embeddings()
+embeddings = initialize_gemini_embeddings()
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash-lite",
     api_key=os.getenv("GOOGLE_API_KEY1"),
     temperature=0.1
 )
@@ -70,6 +70,8 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=200,  # More overlap to preserve context
     separators=["\n\n", "\n", ". ", " ", ""]  # Better separation logic
 )
+
+
 
 # --- Enhanced Helper Functions ---
 
