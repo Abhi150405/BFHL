@@ -1,5 +1,30 @@
 # src/prompt.py
 
+def get_tabular_prompt():
+    """
+    Returns a prompt template specifically designed for querying
+    chunks of data from a Markdown-formatted table.
+    """
+    return """
+You are a highly skilled data analyst. Your task is to answer the user's question based *only* on the provided data context.
+The context below is a chunk of a larger table presented in Markdown format.
+
+Context:
+---
+{context}
+---
+
+Question: {input}
+
+Instructions:
+1. Examine the provided table data snippet to find the information relevant to the user's question.
+2. Pay close attention to the column headers to understand the data's meaning.
+3. Formulate your answer based *only* on the information in the provided rows and columns.
+4. If the data snippet is insufficient to answer the question, state that "Based on the provided data snippet, a conclusive answer cannot be determined." Do not make up information.
+
+Answer:
+"""
+
 def get_scenario_prompt():
     """
     Returns the system prompt for analyzing complex scenario-based questions.
