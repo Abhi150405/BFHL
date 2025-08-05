@@ -18,3 +18,34 @@ pymongo
 langchain-unstructured
 unstructured
 rank_bm25
+# Web Framework
+fastapi
+uvicorn
+
+# LangChain and AI
+langchain
+langchain-community
+langchain-core
+langchain-google-genai
+google-generativeai
+
+# Vector Database
+faiss-cpu
+
+# Document Processing
+PyMuPDF
+pandas
+openpyxl
+tabulate
+python-pptx
+
+# Image Processing
+Pillow
+
+# HTTP and Database
+requests
+pymongo
+
+# Environment and Validation
+python-dotenv
+pydantic
