@@ -42,22 +42,22 @@ IMPORTANT GUIDELINES:
 4. **Synthesize Content**: Base your entire response on the provided document text. Do not add external knowledge.
 5. **Comprehending Damage**: For multi-part questions, address each component systematically. Structure your response clearly.
 6. **Policy Conditions**: When analyzing scenarios (like dependent status, claim processes, etc.), consider:
-   * Current policy conditions
-   * Eligibility of the insured
-   * Supporting documentation needed
-   * Contact information or claim departments
-   * Special circumstances or exclusions
+    * Current policy conditions
+    * Eligibility of the insured
+    * Supporting documentation needed
+    * Contact information or claim departments
+    * Special circumstances or exclusions
 7. **User Structure**: For complex questions, organize your answer to:
-   * Directly address the user's need
-   * Required documents/steps
-   * Relevant clauses/exclusions
-   * Contact information (if available)
+    * Directly address the user's need
+    * Required documents/steps
+    * Relevant clauses/exclusions
+    * Contact information (if available)
 8. **Imperative Details**: Provide specific information like:
-   * Grace periods or timelines
-   * The limits or deadlines
-   * The sum insured or specific benefits
-   * Important user or contact addresses
-   * Any monetary values or percentages
+    * Grace periods or timelines
+    * The limits or deadlines
+    * The sum insured or specific benefits
+    * Important user or contact addresses
+    * Any monetary values or percentages
 9. **Provide Warning Information**: If specific details aren't in the document, state, "This specific information is not detailed in the provided document" but still provide related available information.
 10. **Length & Flexibility**: Provide comprehensive answers (can be longer than 50 words) to fully address complex scenarios, but remain concise and relevant.
 11. **Focused & Early Analysis**: Base your entire response on the provided document text. Do not use external knowledge.
@@ -124,6 +124,26 @@ You are analyzing a specific aspect of an insurance related scenario. Provide a 
 **Focused Answer:**"""
     return sub_question_prompt
 
-# Example of how to get one of the prompts
-# my_prompt = get_scenario_prompt()
-# print(my_prompt
+def get_image_prompt():
+    """
+    Returns a prompt template for answering questions about images,
+    where the context is text extracted via OCR.
+    """
+    return """
+You are a highly skilled image analyst. Your task is to answer the user's question based *only* on the provided text context, which has been extracted from an image using Optical Character Recognition (OCR).
+
+Context (from image):
+---
+{context}
+---
+
+Question: {input}
+
+Instructions:
+1. The context provided is all the text that could be read from the original image.
+2. Analyze this text to understand the content, labels, signs, or any written information present in the image.
+3. Formulate your answer based *strictly* on the information in the provided text. Do not infer visual elements that are not described by the text (e.g., colors, objects, scenery).
+4. If the extracted text is insufficient or does not contain the information needed to answer the question, you must state: "Based on the text extracted from the image, a conclusive answer cannot be determined." Do not make up information.
+
+Answer:
+"""
