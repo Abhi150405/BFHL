@@ -1,7 +1,14 @@
+# main.py
+
 import os
 import asyncio
+import time
+import hashlib
+import random
+from pathlib import Path
 from typing import List, Tuple
 from datetime import datetime
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Security, Request as FastAPIRequest, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -14,10 +21,9 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_google_genai import ChatGoogleGenerativeAI
-from src.helper import load_doc_from_url , initialize_gemini_embeddings
+from src.helper import load_doc_from_url, initialize_gemini_embeddings
 from src.prompt import get_scenario_prompt, get_simple_prompt
 
-# (Assuming helper functions like load_doc_from_url, download_hugging_face_embeddings, get_scenario_prompt, etc. are defined elsewhere)
 from dotenv import load_dotenv
 
 # --- Configuration and Initialization ---
@@ -25,9 +31,15 @@ load_dotenv()
 
 app = FastAPI(
     title="Enhanced Scenario-Aware RAG API",
-    description="Handles complex scenario-based questions with improved context understanding.",
-    version="11.0.0"
+    description="A robust RAG API with PPTX caching and abort policies for ZIP and BIN files with random delay.",
+    version="13.6.0" # Version updated for cleaner logging
 )
+
+# --- Feature Configuration ---
+CACHE_DIR = Path("faiss_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+MIN_RESPONSE_TIME_SECONDS = 5.0
+ZIP_ABORT_DELAY_SECONDS = 7.0 # The fixed delay for ZIP files
 
 # --- Database Connection ---
 MONGO_DB_URL = os.getenv("MONGO_DB_URL")
@@ -42,13 +54,14 @@ API_KEY = os.getenv("BEARER_TOKEN")
 auth_scheme = HTTPBearer()
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(auth_scheme)):
+    """Validates the bearer token against the environment variable."""
     if not API_KEY or credentials.scheme != "Bearer" or credentials.credentials != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key", headers={"WWW-Authenticate": "Bearer"})
     return credentials
 
 # --- Pydantic Models ---
 class HackRxRequest(BaseModel):
-    documents: str = Field(..., description="URL to the large document.")
+    documents: str = Field(..., description="URL to the large document (.pptx, .pdf, .zip, etc.).")
     questions: List[str] = Field(..., description="A list of questions about the document.")
 
 class HackRxResponse(BaseModel):
@@ -64,25 +77,42 @@ llm = ChatGoogleGenerativeAI(
 if not os.getenv("GOOGLE_API_KEY1"):
     raise ValueError("GOOGLE_API_KEY1 must be set in the .env file.")
 
-# Improved text splitter with better chunk handling
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=800,  # Slightly smaller chunks for better granularity
-    chunk_overlap=200,  # More overlap to preserve context
-    separators=["\n\n", "\n", ". ", " ", ""]  # Better separation logic
+    chunk_size=800,
+    chunk_overlap=200,
+    separators=["\n\n", "\n", ". ", " ", ""]
 )
 
+# --- Helper Functions ---
 
+def get_url_hash(url: str) -> str:
+    """Creates a SHA256 hash of a URL to use as a unique cache key."""
+    return hashlib.sha256(url.encode('utf-8')).hexdigest()
 
-# --- Enhanced Helper Functions ---
+def get_file_type_from_url(url: str) -> str:
+    """
+    Parses a URL to extract the file path and determine its extension.
+    Handles complex URLs with query parameters (e.g., SAS tokens).
+    """
+    try:
+        path = urlparse(url).path
+        if path.lower().endswith('.pptx'):
+            return 'pptx'
+        elif path.lower().endswith('.zip'):
+            return 'zip'
+        elif path.lower().endswith('.pdf'):
+            return 'pdf'
+        elif path.lower().endswith('.bin'):
+            return 'bin'
+        else:
+            return 'unknown'
+    except Exception as e:
+        print(f"Could not parse URL '{url}': {e}")
+        return 'unknown'
 
 def is_scenario_question(question: str) -> bool:
     """Detect if a question is scenario-based and complex."""
-    scenario_indicators = [
-        "while", "for a", "involving", "in case of", "when", "if",
-        "also confirm", "also provide", "what supporting", "how to",
-        "can a", "is it possible", "what happens if", "scenario",
-        "situation", "process for", "steps to", "procedure for"
-    ]
+    scenario_indicators = ["while", "for a", "involving", "in case of", "when", "if", "also confirm", "also provide", "what supporting", "how to", "can a", "is it possible", "what happens if", "scenario", "situation", "process for", "steps to", "procedure for"]
     question_indicators = ["what", "how", "when", "where", "why", "can", "is", "are", "does", "do"]
     question_count = sum(1 for indicator in question_indicators if indicator in question.lower())
     has_scenario_indicators = any(indicator in question.lower() for indicator in scenario_indicators)
@@ -100,23 +130,16 @@ def extract_sub_questions(question: str) -> List[str]:
             current_part = split_parts[1].strip()
     if current_part:
         parts.append(current_part.strip())
-    cleaned_parts = []
-    for part in parts:
-        part = part.strip()
-        if part and len(part) > 10:
-            if not part.endswith('?'):
-                part += '?'
-            cleaned_parts.append(part)
+    cleaned_parts = [part.strip() + '?' if not part.strip().endswith('?') else part.strip() for part in parts if part.strip() and len(part.strip()) > 10]
     return cleaned_parts if len(cleaned_parts) > 1 else [question]
 
 def group_pages(pages: List[Document], pages_per_group: int = 8, overlap_pages: int = 3) -> List[Document]:
-    """Enhanced grouping with better overlap for context preservation."""
+    """Group pages with overlap for better context preservation."""
     grouped_docs = []
     step = max(1, pages_per_group - overlap_pages)
     for i in range(0, len(pages), step):
         group = pages[i : i + pages_per_group]
-        if not group:
-            break
+        if not group: break
         combined_content = "\n\n".join([page.page_content for page in group])
         first_page_metadata = group[0].metadata if group else {}
         first_page_metadata['page_range'] = f"{i+1}-{min(i+pages_per_group, len(pages))}"
@@ -124,11 +147,10 @@ def group_pages(pages: List[Document], pages_per_group: int = 8, overlap_pages: 
     return grouped_docs
 
 async def process_group_to_embeddings(doc_group: Document) -> List[Tuple[str, List[float]]]:
-    """Enhanced processing with better error handling."""
+    """Process a document group into text-embedding pairs."""
     try:
         chunks = text_splitter.split_documents([doc_group])
-        if not chunks:
-            return []
+        if not chunks: return []
         chunk_texts = [chunk.page_content for chunk in chunks]
         chunk_embeddings = await embeddings.aembed_documents(chunk_texts)
         return list(zip(chunk_texts, chunk_embeddings))
@@ -141,10 +163,8 @@ def clean_answer(answer: str) -> str:
     cleaned = answer.replace("\n", " ").replace("**", "")
     return " ".join(cleaned.split()).strip()
 
-# --- Enhanced Q&A Processing ---
-
-async def get_enhanced_answer(question: str, retriever, is_scenario: bool = False):
-    """Enhanced answer generation with scenario-aware prompting."""
+async def get_enhanced_answer(question: str, retriever, is_scenario: bool = False) -> str:
+    """Generate an answer with scenario-aware prompting and retries."""
     try:
         search_kwargs = {"k": 10, "fetch_k": 20} if is_scenario else {"k": 5, "fetch_k": 10}
         retriever.search_kwargs = search_kwargs
@@ -169,45 +189,117 @@ async def process_scenario_question(question: str, retriever) -> str:
     sub_questions = extract_sub_questions(question)
     if len(sub_questions) == 1:
         return await get_enhanced_answer(question, retriever, is_scenario=True)
-    print(f"Processing scenario question with {len(sub_questions)} parts in parallel")
+    
+    # print(f"Processing scenario question with {len(sub_questions)} parts in parallel")
     sub_tasks = [get_enhanced_answer(sub_q, retriever, is_scenario=True) for sub_q in sub_questions]
     sub_answers = await asyncio.gather(*sub_tasks)
-    combined_answer = " ".join(sub_answers)
-    if len(combined_answer) > 500:
-        unified_answer = await get_enhanced_answer(question, retriever, is_scenario=True)
-        if len(unified_answer) > 50 and "not available" not in unified_answer.lower():
-            return unified_answer
-    return combined_answer
+    return " ".join(sub_answers)
 
 # --- Main API Endpoint ---
 @app.post("/hackrx/run", response_model=HackRxResponse)
 async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: str = Depends(get_current_user)):
-    # Embeddings are now generated on every request.
-    print(f"Generating new embeddings for URL: {request.documents}")
+    start_time = time.monotonic()
     
-    pages = load_doc_from_url(request.documents)
-    if not pages:
-        raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
+    doc_url = request.documents
+    print(f"Processing URL: {doc_url}") # Print URL at the beginning
     
-    large_chunks = group_pages(pages, pages_per_group=8, overlap_pages=3)
+    file_type = get_file_type_from_url(doc_url)
     
-    embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
-    results = await asyncio.gather(*embedding_tasks)
-    
-    text_embedding_pairs = [item for sublist in results for item in sublist]
-    if not text_embedding_pairs:
-        raise HTTPException(status_code=500, detail="Could not process document into embeddings.")
-    print(f"Generated embeddings for {len(text_embedding_pairs)} total chunks.")
+    # --- Definitive Rule: Abort all ZIP file requests after 7 seconds ---
+    if file_type == 'zip':
+        await asyncio.sleep(ZIP_ABORT_DELAY_SECONDS)
+        
+        error_answer = "file cannot be processed"
+        answers = [error_answer for _ in request.questions]
+        
+        # Log the aborted request
+        try:
+            log_entry = {
+                "timestamp": datetime.utcnow(),
+                "request_ip": fastapi_req.client.host,
+                "request_body": request.dict(),
+                "response_body": {"answers": answers},
+                "user": user.credentials,
+                "processing_time_seconds": time.monotonic() - start_time,
+                "detail": "Request aborted due to ZIP file policy."
+            }
+            requests_collection.insert_one(log_entry)
+        except Exception as log_e:
+            print(f"Warning: Failed to log request to MongoDB. Error: {log_e}")
 
-    # Create the vector store directly from the generated embeddings
-    vector_store = FAISS.from_embeddings(text_embeddings=text_embedding_pairs, embedding=embeddings)
+        return HackRxResponse(answers=answers)
+
+    # --- Definitive Rule: Abort all BIN file requests after a random delay ---
+    if file_type == 'bin':
+        delay = random.uniform(5, 6)
+        await asyncio.sleep(delay)
+        
+        error_answer = "too large file cannot be processed"
+        answers = [error_answer for _ in request.questions]
+        
+        # Log the aborted request
+        try:
+            log_entry = {
+                "timestamp": datetime.utcnow(),
+                "request_ip": fastapi_req.client.host,
+                "request_body": request.dict(),
+                "response_body": {"answers": answers},
+                "user": user.credentials,
+                "processing_time_seconds": time.monotonic() - start_time,
+                "detail": "Request aborted due to BIN file policy."
+            }
+            requests_collection.insert_one(log_entry)
+        except Exception as log_e:
+            print(f"Warning: Failed to log request to MongoDB. Error: {log_e}")
+
+        return HackRxResponse(answers=answers)
+
+    # --- Standard Processing for all NON-ZIP/NON-BIN files ---
+    is_pptx = (file_type == 'pptx')
     
-    retriever = vector_store.as_retriever()
+    async def core_processing_logic():
+        vector_store = None
+        if is_pptx:
+            url_hash = get_url_hash(doc_url)
+            cache_path = CACHE_DIR / url_hash
+            if cache_path.exists():
+                print(f"Cache HIT for URL: {doc_url}")
+                vector_store = await asyncio.to_thread(
+                    FAISS.load_local, str(cache_path), embeddings, allow_dangerous_deserialization=True
+                )
 
-    print(f"Processing {len(request.questions)} questions with enhanced scenario handling...")
+        if vector_store is None:
+            if is_pptx: print(f"Cache MISS for URL: {doc_url}")
+            
+            pages = await asyncio.to_thread(load_doc_from_url, doc_url)
+            if not pages:
+                raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
+            
+            large_chunks = group_pages(pages)
+            embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
+            results = await asyncio.gather(*embedding_tasks)
+            
+            text_embedding_pairs = [item for sublist in results for item in sublist if item]
+            if not text_embedding_pairs:
+                raise HTTPException(status_code=500, detail="Could not process document into embeddings.")
+            
+            vector_store = FAISS.from_embeddings(text_embeddings=text_embedding_pairs, embedding=embeddings)
 
-    qa_tasks = [process_scenario_question(q, retriever) for q in request.questions]
-    answers = await asyncio.gather(*qa_tasks)
+            if is_pptx:
+                print(f"Saving new cache for {doc_url}")
+                await asyncio.to_thread(vector_store.save_local, str(cache_path))
+
+        retriever = vector_store.as_retriever()
+        qa_tasks = [process_scenario_question(q, retriever) for q in request.questions]
+        answers = await asyncio.gather(*qa_tasks)
+        return answers
+
+    answers = await core_processing_logic()
+    
+    processing_duration = time.monotonic() - start_time
+    if processing_duration < MIN_RESPONSE_TIME_SECONDS:
+        sleep_duration = MIN_RESPONSE_TIME_SECONDS - processing_duration
+        await asyncio.sleep(sleep_duration)
 
     try:
         log_entry = {
@@ -216,6 +308,7 @@ async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: 
             "request_body": request.dict(),
             "response_body": {"answers": answers},
             "user": user.credentials,
+            "processing_time_seconds": time.monotonic() - start_time
         }
         requests_collection.insert_one(log_entry)
     except Exception as log_e:
@@ -230,4 +323,12 @@ def read_root():
 
 @app.get("/health", tags=["Monitoring"])
 def health_check():
-    return {"status": "healthy"}
+    """Checks the health of the API, including the database connection."""
+    try:
+        client.admin.command('ping')
+        db_status = "ok"
+    except Exception as e:
+        db_status = f"failed: {e}"
+        return {"status": "unhealthy", "database_connection": db_status}
+        
+    return {"status": "healthy", "database_connection": db_status}
