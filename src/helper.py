@@ -22,6 +22,7 @@ import google.generativeai as genai
 # Libraries for file processing
 import pptx
 from PIL import Image
+from bs4 import BeautifulSoup # Added for HTML parsing
 
 # --- CONFIGURATION ---
 IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff']
@@ -165,6 +166,34 @@ def process_bin_as_documents(file_path: str, source: str) -> List[Document]:
             print(f"Could not read binary file '{source}' as text: {e}")
     return [Document(page_content=f"[Unreadable binary content in file '{source}']", metadata={'source': source})]
 
+def process_html_as_documents(html_content: bytes, source: str) -> List[Document]:
+    """
+    Processes HTML content, extracts text using BeautifulSoup, and returns a Document.
+    This handles multilingual content by decoding with UTF-8.
+    """
+    print(f"Processing HTML content from '{source}'...")
+    try:
+        # Decode using UTF-8 for broad language support
+        html_text = html_content.decode('utf-8')
+        soup = BeautifulSoup(html_text, 'lxml')
+        
+        # Extract text, remove script/style tags, and clean up whitespace
+        for script_or_style in soup(["script", "style"]):
+            script_or_style.decompose()
+        
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        cleaned_text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        if not cleaned_text:
+            return []
+            
+        return [Document(page_content=cleaned_text, metadata={'source': source, 'content_type': 'webpage_text'})]
+    except Exception as e:
+        print(f"Could not process HTML content from '{source}': {e}")
+        return []
+
 # --- Internal Core Processing Logic ---
 
 def _process_local_file(file_path: str, source: str) -> List[Document]:
@@ -188,9 +217,22 @@ def _process_local_file(file_path: str, source: str) -> List[Document]:
         return process_zip_as_documents(file_path, source=source)
     elif file_ext == '.bin':
         return process_bin_as_documents(file_path, source=source)
+    # Added .html as a recognized extension
+    elif file_ext == '.html':
+        with open(file_path, 'rb') as f:
+            return process_html_as_documents(f.read(), source)
     else:
-        print(f"Warning: No specific handler for file extension '{file_ext}'. No documents loaded.")
+        # Fallback for unknown extensions, like .tmp from before
+        print(f"Warning: No specific handler for file extension '{file_ext}'. Attempting to read as plain text.")
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            if content.strip():
+                return [Document(page_content=content, metadata={'source': source, 'format': 'plain_text'})]
+        except Exception as e:
+            print(f"Could not read file '{source}' as plain text: {e}")
         return []
+
 
 # --- Main Document Loading Orchestrator ---
 
@@ -198,14 +240,31 @@ def load_doc_from_url(url: str) -> List[Document]:
     """Main public function. Downloads a document from a URL and processes it."""
     file_name = os.path.basename(urlparse(url).path)
     file_ext = os.path.splitext(file_name)[1].lower()
+    
+    temp_file_path = None
+    try:
+        print(f"Downloading document from {url}...")
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
 
-    if not file_ext:
-        print(f"URL has no file extension. Attempting to infer from Content-Type header...")
-        try:
-            head_response = requests.head(url, allow_redirects=True, timeout=20)
-            head_response.raise_for_status()
-            content_type = head_response.headers.get('Content-Type', '').lower()
-            ext_map = {'.csv': 'csv', '.pdf': 'pdf', '.zip': 'zip', '.xlsx': 'spreadsheetml', '.docx': 'wordprocessingml', '.pptx': 'presentationml'}
+        # Check content type header to handle URLs without file extensions
+        content_type = response.headers.get('Content-Type', '').lower()
+        
+        # NEW: Handle HTML content directly
+        if 'text/html' in content_type:
+            print("Detected HTML content type. Processing directly.")
+            pages = process_html_as_documents(response.content, source=url)
+            print(f"Document processing complete. Loaded {len(pages)} total documents/pages.")
+            return pages
+
+        # If not HTML, proceed with file-based processing
+        if not file_ext:
+            print(f"URL has no file extension. Attempting to infer from Content-Type header...")
+            ext_map = {
+                '.csv': 'csv', '.pdf': 'pdf', '.zip': 'zip', 
+                '.xlsx': 'spreadsheetml', '.docx': 'wordprocessingml', 
+                '.pptx': 'presentationml', '.html': 'html'
+            }
             for ext, type_str in ext_map.items():
                 if type_str in content_type:
                     file_ext = ext
@@ -215,14 +274,8 @@ def load_doc_from_url(url: str) -> List[Document]:
                 if '.' not in file_name: file_name += file_ext
             else:
                 print(f"Could not infer a specific extension from Content-Type: {content_type}")
-        except requests.exceptions.RequestException as e:
-            print(f"Warning: Could not perform HEAD request: {e}")
 
-    temp_file_path = None
-    try:
-        print(f"Downloading document from {url}...")
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
+        # Save to a temporary file and process
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext or ".tmp") as temp_file:
             temp_file.write(response.content)
             temp_file_path = temp_file.name
@@ -230,6 +283,7 @@ def load_doc_from_url(url: str) -> List[Document]:
         pages = _process_local_file(temp_file_path, source=file_name or url)
         print(f"Document processing complete. Loaded {len(pages)} total documents/pages.")
         return pages
+        
     except requests.exceptions.RequestException as e:
         print(f"Failed to download document from URL: {e}")
         return []
