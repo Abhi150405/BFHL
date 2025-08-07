@@ -35,7 +35,7 @@ load_dotenv()
 app = FastAPI(
     title="Enhanced Vision-Aware RAG API",
     description="A robust RAG API using Gemini Vision for image processing, with PPTX caching and abort policies.",
-    version="15.0.0" # Version updated for Gemini Vision integration
+    version="16.0.0" # Version updated for Web and Multilingual support
 )
 
 # --- Feature Configuration ---
@@ -64,7 +64,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
 
 # --- Pydantic Models ---
 class HackRxRequest(BaseModel):
-    documents: str = Field(..., description="URL to the large document (.pptx, .pdf, .zip, .png, .jpg, etc.).")
+    documents: str = Field(..., description="URL to the large document (.pptx, .pdf, .zip, .png, .jpg, .html, etc.).")
     questions: List[str] = Field(..., description="A list of questions about the document.")
 
 class HackRxResponse(BaseModel):
@@ -73,7 +73,7 @@ class HackRxResponse(BaseModel):
 # --- Initialize RAG Components ---
 embeddings = initialize_gemini_embeddings()
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite", # This model is multimodal and supports vision
+    model="gemini-1.5-pro-latest", # This model is multimodal and supports vision
     api_key=os.getenv("GOOGLE_API_KEY1"),
     temperature=0.1
 )
@@ -98,24 +98,36 @@ def get_file_type_from_url(url: str) -> str:
     Handles complex URLs with query parameters (e.g., SAS tokens).
     """
     try:
+        # First, check headers for content type for URLs without extensions
+        head_response = requests.head(url, allow_redirects=True, timeout=10)
+        content_type = head_response.headers.get('Content-Type', '').lower()
+        if 'text/html' in content_type:
+            return 'html'
+
+        # Fallback to parsing the URL path
         path = urlparse(url).path
-        file_ext = path.split('.')[-1].lower()
+        file_ext = os.path.splitext(path)[1].lower()
         
-        if file_ext == 'pptx':
+        if file_ext == '.pptx':
             return 'pptx'
-        elif file_ext == 'zip':
+        elif file_ext == '.zip':
             return 'zip'
-        elif file_ext == 'pdf':
+        elif file_ext == '.pdf':
             return 'pdf'
-        elif file_ext == 'bin':
+        elif file_ext == '.bin':
             return 'bin'
-        elif file_ext in ['png', 'jpg', 'jpeg', 'bmp', 'tiff']:
+        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
             return 'image'
+        elif file_ext == '.html':
+            return 'html'
         else:
+            # If no extension but content-type wasn't html, it's unknown
             return 'unknown'
     except Exception as e:
-        print(f"Could not parse URL '{url}': {e}")
-        return 'unknown'
+        print(f"Could not determine file type for URL '{url}': {e}. Assuming 'html' as a fallback.")
+        # Fallback for dynamic URLs that might serve HTML
+        return 'html'
+
 
 def is_scenario_question(question: str) -> bool:
     """Detect if a question is scenario-based and complex."""
@@ -312,7 +324,7 @@ To get more information about this file, I recommend checking the website where 
             raise HTTPException(status_code=500, detail=f"An error occurred while processing the image file: {e}")
 
     else:
-        # --- Standard Processing for all NON-ZIP/NON-BIN/NON-IMAGE files ---
+        # --- Standard Processing for all other files (PDF, PPTX, HTML, etc.) ---
         is_pptx = (file_type == 'pptx')
         
         async def core_processing_logic():
@@ -329,6 +341,7 @@ To get more information about this file, I recommend checking the website where 
             if vector_store is None:
                 if is_pptx: print(f"Cache MISS for URL: {doc_url}")
                 
+                # This now handles HTML pages gracefully
                 pages = await asyncio.to_thread(load_doc_from_url, doc_url)
                 if not pages:
                     raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
