@@ -73,7 +73,7 @@ class HackRxResponse(BaseModel):
 # --- Initialize RAG Components ---
 embeddings = initialize_gemini_embeddings()
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite", # This model is multimodal and supports vision
+    model="gemini-1.5-pro-latest", # This model is multimodal and supports vision
     api_key=os.getenv("GOOGLE_API_KEY1"),
     temperature=0.1
 )
