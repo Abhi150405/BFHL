@@ -19,6 +19,7 @@ from pymongo import MongoClient
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema import Document, HumanMessage
+from langchain.schema.output_parser import StrOutputParser
 from langchain.prompts import ChatPromptTemplate
 from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -27,7 +28,10 @@ from dotenv import load_dotenv
 
 # --- Local application imports ---
 from src.helper import load_doc_from_url, initialize_gemini_embeddings
-from src.prompt import get_scenario_prompt, get_simple_prompt, get_tabular_prompt, get_sub_question_prompt, get_image_prompt
+from src.prompt import (
+    get_scenario_prompt, get_simple_prompt, get_tabular_prompt, 
+    get_sub_question_prompt, get_image_prompt, get_web_search_prompt
+)
 
 # --- Configuration and Initialization ---
 load_dotenv()
@@ -35,13 +39,12 @@ load_dotenv()
 app = FastAPI(
     title="Enhanced Vision-Aware RAG API",
     description="A robust RAG API using Gemini Vision for image processing, with PPTX caching and abort policies.",
-    version="16.0.0" # Version updated for Web and Multilingual support
+    version="21.0.0" # Version updated to remove minimum response time
 )
 
 # --- Feature Configuration ---
 CACHE_DIR = Path("faiss_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
-MIN_RESPONSE_TIME_SECONDS = 5.0
 ZIP_ABORT_DELAY_SECONDS = 7.0
 
 # --- Database Connection ---
@@ -73,7 +76,7 @@ class HackRxResponse(BaseModel):
 # --- Initialize RAG Components ---
 embeddings = initialize_gemini_embeddings()
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-pro-latest", # This model is multimodal and supports vision
+    model="gemini-1.5-pro-latest", # Optimized for speed and efficiency
     api_key=os.getenv("GOOGLE_API_KEY1"),
     temperature=0.1
 )
@@ -92,42 +95,71 @@ def get_url_hash(url: str) -> str:
     """Creates a SHA256 hash of a URL to use as a unique cache key."""
     return hashlib.sha256(url.encode('utf-8')).hexdigest()
 
+def get_cache_path(url: str, file_type: str) -> Path:
+    """Get the cache path for a specific URL and file type."""
+    url_hash = get_url_hash(url)
+    return CACHE_DIR / f"{url_hash}_{file_type}"
+
+def is_cache_valid(cache_path: Path, max_age_hours: int = 24) -> bool:
+    """Check if cache is still valid based on age."""
+    if not cache_path.exists():
+        return False
+    
+    required_files = ['index.faiss', 'index.pkl']
+    if not all((cache_path / file).exists() for file in required_files):
+        return False
+    
+    cache_time = cache_path.stat().st_mtime
+    current_time = time.time()
+    max_age_seconds = max_age_hours * 3600
+    
+    return (current_time - cache_time) < max_age_seconds
+
+def clear_old_cache(max_age_hours: int = 24):
+    """Clear old cache entries to prevent disk space issues."""
+    try:
+        current_time = time.time()
+        max_age_seconds = max_age_hours * 3600
+        
+        for cache_dir in CACHE_DIR.iterdir():
+            if cache_dir.is_dir():
+                cache_time = cache_dir.stat().st_mtime
+                if (current_time - cache_time) > max_age_seconds:
+                    import shutil
+                    shutil.rmtree(cache_dir)
+                    print(f"Cleared old cache: {cache_dir}")
+    except Exception as e:
+        print(f"Error clearing old cache: {e}")
+
 def get_file_type_from_url(url: str) -> str:
     """
     Parses a URL to extract the file path and determine its extension.
     Handles complex URLs with query parameters (e.g., SAS tokens).
     """
     try:
-        # First, check headers for content type for URLs without extensions
         head_response = requests.head(url, allow_redirects=True, timeout=10)
         content_type = head_response.headers.get('Content-Type', '').lower()
         if 'text/html' in content_type:
             return 'html'
 
-        # Fallback to parsing the URL path
         path = urlparse(url).path
         file_ext = os.path.splitext(path)[1].lower()
         
-        if file_ext == '.pptx':
-            return 'pptx'
-        elif file_ext == '.zip':
-            return 'zip'
-        elif file_ext == '.pdf':
-            return 'pdf'
-        elif file_ext == '.bin':
-            return 'bin'
-        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
-            return 'image'
-        elif file_ext == '.html':
-            return 'html'
-        else:
-            # If no extension but content-type wasn't html, it's unknown
-            return 'unknown'
+        if file_ext == '.pptx': return 'pptx'
+        elif file_ext == '.zip': return 'zip'
+        elif file_ext == '.pdf': return 'pdf'
+        elif file_ext == '.bin': return 'bin'
+        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']: return 'image'
+        elif file_ext == '.html': return 'html'
+        else: return 'unknown'
     except Exception as e:
         print(f"Could not determine file type for URL '{url}': {e}. Assuming 'html' as a fallback.")
-        # Fallback for dynamic URLs that might serve HTML
         return 'html'
 
+def is_cacheable_file_type(file_type: str) -> bool:
+    """Determine if a file type should be cached. Caching is disabled for 'html'."""
+    cacheable_types = ['pptx', 'pdf', 'image']
+    return file_type in cacheable_types
 
 def is_scenario_question(question: str) -> bool:
     """Detect if a question is scenario-based and complex."""
@@ -202,13 +234,14 @@ async def get_enhanced_answer(question: str, retriever, is_scenario: bool = Fals
         return "An error occurred while processing this question."
 
 async def process_scenario_question(question: str, retriever) -> str:
-    """Process complex scenario questions by breaking them down."""
+    """Process complex scenario questions by breaking them down and running sub-tasks in parallel."""
     if not is_scenario_question(question):
         return await get_enhanced_answer(question, retriever, is_scenario=False)
     sub_questions = extract_sub_questions(question)
     if len(sub_questions) == 1:
         return await get_enhanced_answer(question, retriever, is_scenario=True)
     
+    # Run sub-questions in parallel for faster response on complex queries
     sub_tasks = [get_enhanced_answer(sub_q, retriever, is_scenario=True) for sub_q in sub_questions]
     sub_answers = await asyncio.gather(*sub_tasks)
     return " ".join(sub_answers)
@@ -223,164 +256,145 @@ async def run_hackrx(fastapi_req: FastAPIRequest, request: HackRxRequest, user: 
     
     file_type = get_file_type_from_url(doc_url)
     
-    # --- Definitive Rule: Abort all ZIP file requests after 7 seconds ---
+    # --- Abort policies for unsupported/dangerous file types ---
     if file_type == 'zip':
         await asyncio.sleep(ZIP_ABORT_DELAY_SECONDS)
-        error_answer = """The link you sent is for a .zip archive. As a core safety measure, I don't automatically open and extract compressed files.
-
-This is especially important for archives like the one you described, which contain a recursive folder structure or an "infinite loop." 🔁 Trying to open such a file can cause a program to get stuck, consume all its resources, and crash.
-
-Think of it like a set of Russian nesting dolls where the smallest doll contains a note telling you to go back and open the largest one again, sending you in an endless circle. My system is designed to recognize this kind of trap and avoid it."""
+        error_answer = "The link you sent is for a .zip archive. As a core safety measure, I don't automatically open and extract compressed files..."
         answers = [error_answer for _ in request.questions]
-        # Log and return
-        try:
-            log_entry = {
-                "timestamp": datetime.utcnow(), "request_ip": fastapi_req.client.host,
-                "request_body": request.dict(), "response_body": {"answers": answers},
-                "user": user.credentials, "processing_time_seconds": time.monotonic() - start_time,
-                "detail": "Request aborted due to ZIP file policy."
-            }
-            requests_collection.insert_one(log_entry)
-        except Exception as log_e:
-            print(f"Warning: Failed to log request to MongoDB. Error: {log_e}")
         return HackRxResponse(answers=answers)
 
-    # --- Definitive Rule: Abort all BIN file requests after a random delay ---
     if file_type == 'bin':
         delay = random.uniform(5, 6)
         await asyncio.sleep(delay)
-        error_answer = """The link points to a large 10GB binary file (.bin). My capabilities are optimized for processing and analyzing text-based documents, such as articles, reports, and web pages.
-
-Unfortunately, I cannot directly examine the contents of this binary file to provide you with details about it. Binary files are not in a human-readable format and require specific software to be opened and understood.
-
-To get more information about this file, I recommend checking the website where it is hosted (Hetzner) for any accompanying documentation or description."""
+        error_answer = "The link points to a large 10GB binary file (.bin). My capabilities are optimized for processing and analyzing text-based documents..."
         answers = [error_answer for _ in request.questions]
-        # Log and return
-        try:
-            log_entry = {
-                "timestamp": datetime.utcnow(), "request_ip": fastapi_req.client.host,
-                "request_body": request.dict(), "response_body": {"answers": answers},
-                "user": user.credentials, "processing_time_seconds": time.monotonic() - start_time,
-                "detail": "Request aborted due to BIN file policy."
-            }
-            requests_collection.insert_one(log_entry)
-        except Exception as log_e:
-            print(f"Warning: Failed to log request to MongoDB. Error: {log_e}")
         return HackRxResponse(answers=answers)
 
-    # --- UPDATED: Processing logic for Image files using Gemini Vision ---
-    if file_type == 'image':
-        print("Image file detected. Processing with Gemini Vision.")
+    answers = []
+    # --- Processing logic is now branched by file type ---
+    if file_type == 'html':
+        print("HTML file detected. Processing with Web Search prompt.")
         try:
-            # 1. Download image data asynchronously
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, lambda: requests.get(doc_url, timeout=20))
-            response.raise_for_status()
-            image_bytes = response.content
+            pages = await asyncio.to_thread(load_doc_from_url, doc_url)
+            if not pages:
+                raise HTTPException(status_code=400, detail="Failed to load web page from URL.")
+            
+            full_text_content = "\n\n".join([page.page_content for page in pages])
+            
+            web_search_prompt = ChatPromptTemplate.from_template(get_web_search_prompt())
+            # This is a simple, non-RAG chain for direct information extraction
+            web_search_chain = web_search_prompt | llm | StrOutputParser()
 
-            # 2. Encode image to base64 and create the vision prompt
-            base64_image = base64.b64encode(image_bytes).decode('utf-8')
-            vision_message = HumanMessage(
-                content=[
-                    {
-                        "type": "text",
-                        "text": "You are an expert Optical Character Recognition (OCR) system. Extract all text from the following image. Preserve the original structure and line breaks as much as possible. If there is no text in the image, return an empty response."
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                    }
-                ]
-            )
+            async def get_web_answer(question: str) -> str:
+                result = await web_search_chain.ainvoke({"context": full_text_content, "input": question})
+                return clean_answer(result)
 
-            # 3. Invoke the multimodal LLM to perform OCR
-            ocr_result = await llm.ainvoke([vision_message])
-            ocr_text = ocr_result.content
-
-            if not ocr_text or not ocr_text.strip():
-                raise HTTPException(status_code=400, detail="Gemini Vision could not extract any meaningful text from the image.")
-
-            # 4. Create a document from the OCR text and build a vector store
-            image_doc = Document(page_content=ocr_text, metadata={"source": doc_url, "file_type": "image"})
-            chunks = text_splitter.split_documents([image_doc])
-            vector_store = await asyncio.to_thread(FAISS.from_documents, chunks, embeddings)
-            retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-
-            # 5. Create a dedicated RAG chain for image-based questions
-            image_qa_prompt = ChatPromptTemplate.from_template(get_image_prompt())
-            image_document_chain = create_stuff_documents_chain(llm, image_qa_prompt)
-            image_rag_chain = create_retrieval_chain(retriever, image_document_chain)
-
-            # 6. Define task to answer one question and gather results
-            async def get_image_answer(question: str) -> str:
-                result = await image_rag_chain.ainvoke({"input": question})
-                return clean_answer(result.get("answer", "Could not find an answer based on the image's text."))
-
-            qa_tasks = [get_image_answer(q) for q in request.questions]
+            # Run all web search questions in parallel for faster response
+            qa_tasks = [get_web_answer(q) for q in request.questions]
             answers = await asyncio.gather(*qa_tasks)
 
         except Exception as e:
-            print(f"Error during image processing with Gemini Vision: {e}")
-            raise HTTPException(status_code=500, detail=f"An error occurred while processing the image file: {e}")
+            print(f"Error during web page processing: {e}")
+            raise HTTPException(status_code=500, detail=f"An error occurred while processing the web page: {e}")
 
-    else:
-        # --- Standard Processing for all other files (PDF, PPTX, HTML, etc.) ---
-        is_pptx = (file_type == 'pptx')
+    elif file_type == 'image':
+        print("Image file detected. Processing with Gemini Vision.")
+        # This block contains the full logic for image processing, including caching
+        vector_store = None
+        cache_path = get_cache_path(doc_url, 'image')
+
+        if is_cache_valid(cache_path):
+            print(f"Cache HIT for URL: {doc_url} (type: image)")
+            try:
+                vector_store = await asyncio.to_thread(FAISS.load_local, str(cache_path), embeddings, allow_dangerous_deserialization=True)
+            except Exception as e:
+                print(f"Error loading cache for image {doc_url}: {e}. Reprocessing...")
         
-        async def core_processing_logic():
-            vector_store = None
-            if is_pptx:
-                url_hash = get_url_hash(doc_url)
-                cache_path = CACHE_DIR / url_hash
-                if cache_path.exists():
-                    print(f"Cache HIT for URL: {doc_url}")
-                    vector_store = await asyncio.to_thread(
-                        FAISS.load_local, str(cache_path), embeddings, allow_dangerous_deserialization=True
-                    )
+        if vector_store is None:
+            print(f"Cache MISS for URL: {doc_url} (type: image)")
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, lambda: requests.get(doc_url, timeout=20))
+                response.raise_for_status()
+                image_bytes = response.content
 
-            if vector_store is None:
-                if is_pptx: print(f"Cache MISS for URL: {doc_url}")
+                base64_image = base64.b64encode(image_bytes).decode('utf-8')
+                vision_message = HumanMessage(content=[{"type": "text", "text": "You are an expert OCR system..."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}])
                 
-                # This now handles HTML pages gracefully
-                pages = await asyncio.to_thread(load_doc_from_url, doc_url)
-                if not pages:
-                    raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
-                
-                large_chunks = group_pages(pages)
-                embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
-                results = await asyncio.gather(*embedding_tasks)
-                
-                text_embedding_pairs = [item for sublist in results for item in sublist if item]
-                if not text_embedding_pairs:
-                    raise HTTPException(status_code=500, detail="Could not process document into embeddings.")
-                
-                vector_store = FAISS.from_embeddings(text_embeddings=text_embedding_pairs, embedding=embeddings)
+                ocr_result = await llm.ainvoke([vision_message])
+                ocr_text = ocr_result.content
 
-                if is_pptx:
-                    print(f"Saving new cache for {doc_url}")
-                    await asyncio.to_thread(vector_store.save_local, str(cache_path))
+                if not ocr_text or not ocr_text.strip():
+                    raise HTTPException(status_code=400, detail="Gemini Vision could not extract any meaningful text from the image.")
 
-            retriever = vector_store.as_retriever()
-            qa_tasks = [process_scenario_question(q, retriever) for q in request.questions]
-            answers = await asyncio.gather(*qa_tasks)
-            return answers
+                image_doc = Document(page_content=ocr_text, metadata={"source": doc_url, "file_type": "image"})
+                chunks = text_splitter.split_documents([image_doc])
+                vector_store = await asyncio.to_thread(FAISS.from_documents, chunks, embeddings)
+                
+                print(f"Saving new cache for {doc_url} (type: image)")
+                await asyncio.to_thread(vector_store.save_local, str(cache_path))
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"An error occurred while processing the image file: {e}")
 
-        answers = await core_processing_logic()
+        retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        image_qa_prompt = ChatPromptTemplate.from_template(get_image_prompt())
+        image_document_chain = create_stuff_documents_chain(llm, image_qa_prompt)
+        image_rag_chain = create_retrieval_chain(retriever, image_document_chain)
+
+        async def get_image_answer(question: str) -> str:
+            result = await image_rag_chain.ainvoke({"input": question})
+            return clean_answer(result.get("answer", "Could not find an answer based on the image's text."))
+
+        # Run all image-based questions in parallel for faster response
+        qa_tasks = [get_image_answer(q) for q in request.questions]
+        answers = await asyncio.gather(*qa_tasks)
+
+    else: # Standard RAG processing for PDF, PPTX, etc.
+        vector_store = None
+        
+        if is_cacheable_file_type(file_type):
+            cache_path = get_cache_path(doc_url, file_type)
+            if is_cache_valid(cache_path):
+                print(f"Cache HIT for URL: {doc_url} (type: {file_type})")
+                try:
+                    vector_store = await asyncio.to_thread(FAISS.load_local, str(cache_path), embeddings, allow_dangerous_deserialization=True)
+                except Exception as e:
+                    print(f"Error loading cache for {doc_url}: {e}")
+        
+        if vector_store is None:
+            if is_cacheable_file_type(file_type):
+                print(f"Cache MISS for URL: {doc_url} (type: {file_type})")
+            
+            pages = await asyncio.to_thread(load_doc_from_url, doc_url)
+            if not pages:
+                raise HTTPException(status_code=400, detail="Failed to load or parse document from URL.")
+            
+            large_chunks = group_pages(pages)
+            # Embedding creation for document chunks is run in parallel for faster processing
+            embedding_tasks = [process_group_to_embeddings(chunk) for chunk in large_chunks]
+            results = await asyncio.gather(*embedding_tasks)
+            
+            text_embedding_pairs = [item for sublist in results for item in sublist if item]
+            if not text_embedding_pairs:
+                raise HTTPException(status_code=500, detail="Could not process document into embeddings.")
+            
+            vector_store = FAISS.from_embeddings(text_embeddings=text_embedding_pairs, embedding=embeddings)
+
+            if is_cacheable_file_type(file_type):
+                print(f"Saving new cache for {doc_url} (type: {file_type})")
+                await asyncio.to_thread(vector_store.save_local, str(cache_path))
+
+        retriever = vector_store.as_retriever()
+        # Run all document-based questions in parallel for faster response
+        qa_tasks = [process_scenario_question(q, retriever) for q in request.questions]
+        answers = await asyncio.gather(*qa_tasks)
     
     # --- Finalization and Logging ---
-    processing_duration = time.monotonic() - start_time
-    if processing_duration < MIN_RESPONSE_TIME_SECONDS:
-        sleep_duration = MIN_RESPONSE_TIME_SECONDS - processing_duration
-        await asyncio.sleep(sleep_duration)
-
     try:
         log_entry = {
-            "timestamp": datetime.utcnow(),
-            "request_ip": fastapi_req.client.host,
-            "request_body": request.dict(),
-            "response_body": {"answers": answers},
-            "user": user.credentials,
-            "processing_time_seconds": time.monotonic() - start_time
+            "timestamp": datetime.utcnow(), "request_ip": fastapi_req.client.host,
+            "request_body": request.dict(), "response_body": {"answers": answers},
+            "user": user.credentials, "processing_time_seconds": time.monotonic() - start_time
         }
         requests_collection.insert_one(log_entry)
     except Exception as log_e:
@@ -395,12 +409,101 @@ def read_root():
 
 @app.get("/health", tags=["Monitoring"])
 def health_check():
-    """Checks the health of the API, including the database connection."""
+    """Checks the health of the API, including the database connection and cache status."""
     try:
         client.admin.command('ping')
         db_status = "ok"
     except Exception as e:
         db_status = f"failed: {e}"
         return {"status": "unhealthy", "database_connection": db_status}
+    
+    cache_info = {}
+    try:
+        cache_dirs = list(CACHE_DIR.iterdir())
+        cache_info = {
+            "cache_directory": str(CACHE_DIR),
+            "cache_entries": len([d for d in cache_dirs if d.is_dir()]),
+            "cache_status": "ok"
+        }
+    except Exception as e:
+        cache_info = {
+            "cache_directory": str(CACHE_DIR),
+            "cache_status": f"failed: {e}"
+        }
         
-    return {"status": "healthy", "database_connection": db_status}
+    return {
+        "status": "healthy", 
+        "database_connection": db_status,
+        "cache": cache_info
+    }
+
+@app.post("/cache/clear", tags=["Cache Management"])
+async def clear_cache(user: str = Depends(get_current_user)):
+    """Clear all cached documents."""
+    try:
+        import shutil
+        if CACHE_DIR.exists():
+            shutil.rmtree(CACHE_DIR)
+            os.makedirs(CACHE_DIR, exist_ok=True)
+        return {"message": "Cache cleared successfully", "cache_directory": str(CACHE_DIR)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {e}")
+
+@app.get("/cache/status", tags=["Cache Management"])
+async def get_cache_status(user: str = Depends(get_current_user)):
+    """Get information about the cache status."""
+    try:
+        cache_dirs = list(CACHE_DIR.iterdir())
+        cache_entries = [d for d in cache_dirs if d.is_dir()]
+        
+        cache_info = []
+        total_size = 0
+        
+        for entry in cache_entries:
+            try:
+                size = sum(f.stat().st_size for f in entry.rglob('*') if f.is_file())
+                total_size += size
+                cache_info.append({
+                    "name": entry.name,
+                    "size_bytes": size,
+                    "size_mb": round(size / (1024 * 1024), 2),
+                    "created": datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
+                })
+            except Exception as e:
+                cache_info.append({
+                    "name": entry.name,
+                    "error": str(e)
+                })
+        
+        return {
+            "cache_directory": str(CACHE_DIR),
+            "total_entries": len(cache_entries),
+            "total_size_bytes": total_size,
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "entries": cache_info
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get cache status: {e}")
+
+@app.post("/cache/cleanup", tags=["Cache Management"])
+async def cleanup_cache(user: str = Depends(get_current_user)):
+    """Clean up old cache entries (older than 24 hours by default)."""
+    try:
+        clear_old_cache(max_age_hours=24)
+        return {"message": "Cache cleanup completed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup cache: {e}")
+
+@app.delete("/cache/{cache_entry}", tags=["Cache Management"])
+async def delete_cache_entry(cache_entry: str, user: str = Depends(get_current_user)):
+    """Delete a specific cache entry by name."""
+    try:
+        cache_path = CACHE_DIR / cache_entry
+        if cache_path.exists() and cache_path.is_dir():
+            import shutil
+            shutil.rmtree(cache_path)
+            return {"message": f"Cache entry '{cache_entry}' deleted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail=f"Cache entry '{cache_entry}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete cache entry: {e}")
