@@ -1,5 +1,3 @@
-# src/prompt.py
-
 def get_tabular_prompt():
     """
     Returns a prompt template specifically designed for querying
@@ -76,6 +74,8 @@ def get_simple_prompt():
     * State clearly: "The document does not contain the final answer. Instead, it provides a set of instructions to find it. Here are the steps:"
     * List the required steps clearly and accurately, quoting any URLs, commands, or specific details directly from the document.
 
+ 
+
 **Context from the document:**
 ---
 {context}
@@ -137,4 +137,29 @@ Instructions:
 4. If the extracted text is insufficient or does not contain the information needed to answer the question, you must state: "Based on the text extracted from the image, a conclusive answer cannot be determined." Do not make up information.
 
 Answer:
+"""
+
+def get_web_search_prompt():
+    """
+    Returns a prompt template for handling web search queries where the goal is to extract specific information from a webpage's content.
+    This is designed for tasks like finding a specific token or piece of data mentioned in the user's request.
+    """
+    return """You are a specialized web page scanner. Your sole purpose is to find a specific piece of information within the provided text content of a web page and return it.
+
+**Web Page Content (Context):**
+---
+{context}
+---
+
+**User Request:**
+{input}
+
+**Instructions:**
+1.  Your task is to fulfill the user's request by finding the specific information within the web page content. For example, if the user asks for a "secret token," you must find that token.
+2.  Analyze the user's request to identify the target information.
+3.  Scan the entire 'Web Page Content' meticulously to find the target.
+4.  Once you find the information, provide **only the information itself** as the answer. Do not add any extra text, explanation, or introductory phrases. For example, if you find the token 'xyz123', your answer must be 'xyz123'.
+5.  If you cannot find the information, you must respond with the exact phrase: "The requested information could not be found in the provided web page content."
+
+**Answer:**
 """
